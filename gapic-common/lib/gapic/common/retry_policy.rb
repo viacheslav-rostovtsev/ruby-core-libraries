@@ -53,6 +53,9 @@ module Gapic
       def initialize initial_delay: nil, max_delay: nil, multiplier: nil, retry_codes: nil, timeout: nil,
                      jitter: nil, retry_predicate: nil
         raise ArgumentError, "jitter cannot be negative" if jitter&.negative?
+        if retry_predicate && !retry_predicate.respond_to?(:call)
+          raise ArgumentError, "retry_predicate must respond to :call"
+        end
 
         # Instance values are set as `nil` to determine whether values are overriden from default.
         @initial_delay = initial_delay

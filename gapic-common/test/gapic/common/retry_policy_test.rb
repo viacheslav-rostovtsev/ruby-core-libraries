@@ -79,6 +79,12 @@ class RetryPolicyTest < Minitest::Test
     end
   end
 
+  def test_uncallable_retry_predicate_raises_error
+    assert_raises ArgumentError do
+      Gapic::Common::RetryPolicy.new retry_predicate: "not_a_proc"
+    end
+  end
+
   def test_jitter_is_added
     retry_policy = Gapic::Common::RetryPolicy.new initial_delay: 5, max_delay: 10, multiplier: 2, jitter: 2.0
 
