@@ -192,6 +192,7 @@ module Gapic
           )
           instructions = [
             Instruction::NotifyProgress.new(bytes_uploaded: new_offset, total_bytes: config.upload_size),
+            Instruction::RealignBuffer.new(server_offset: new_offset),
             Instruction::FillBuffer.new(target_bytesize: state.chunk_size)
           ]
           [next_state, instructions]

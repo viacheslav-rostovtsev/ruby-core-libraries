@@ -239,12 +239,14 @@ class RulesTest < Minitest::Test
     assert_equal :transmission_reading, next_state.status
     assert_equal 512, next_state.offset
     assert_equal 0, next_state.in_flight_length
-    assert_equal 2, instructions.size
+    assert_equal 3, instructions.size
     assert_instance_of Instruction::NotifyProgress, instructions[0]
     assert_equal 512, instructions[0].bytes_uploaded
     assert_equal 1024, instructions[0].total_bytes
-    assert_instance_of Instruction::FillBuffer, instructions[1]
-    assert_equal 512, instructions[1].target_bytesize
+    assert_instance_of Instruction::RealignBuffer, instructions[1]
+    assert_equal 512, instructions[1].server_offset
+    assert_instance_of Instruction::FillBuffer, instructions[2]
+    assert_equal 512, instructions[2].target_bytesize
   end
 
   def test_transition_transmission_sending_cat2_triggers_recovery
