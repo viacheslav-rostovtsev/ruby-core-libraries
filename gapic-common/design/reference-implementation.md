@@ -102,7 +102,7 @@ module Gapic
           in [_, :request_retries_exhausted | :request_connection_failed | :request_failed_unknown]
             fail_with_request_error(state, event)
           else
-            raise InvalidTransitionError, "Invalid event shape #{shape} for state #{state.status}"
+            fail_with_unmatched_transition(state, event)
           end
         end
 
@@ -285,6 +285,30 @@ module Gapic
           [next_state, [Instruction::TerminateFailure.new(error: event.source_error)]]
         end
 
+        def self.fail_with_unmatched_transition(state, event)
+          shape = shape_of(event)
+          action = STATE_DESCRIPTIONS[state.status] || "processing #{state.status}"
+          happened = describe_event(event, shape)
+          message = "Resumable upload failed while #{action}: #{happened}."
+          response = event.is_a?(Event::HttpResponse) ? event : nil
+          raise InvalidTransitionError.new(message, state: state.status, event: event, response: response)
+        end
+
+        def self.describe_event(event, shape)
+          case event
+          when Event::HttpResponse
+            upload_status = event.headers["x-goog-upload-status"] || event.headers["X-Goog-Upload-Status"]
+            status_desc = upload_status ? "'#{upload_status}'" : "missing"
+            "received an unexpected HTTP #{event.status} response (X-Goog-Upload-Status: #{status_desc})"
+          when Event::ChunkRead
+            "received unexpected stream chunk read (#{event.bytes_buffered} bytes, eof: #{event.eof})"
+          when Event::RequestFailed
+            "encountered unexpected request failure (#{event.kind}: #{event.message})"
+          else
+            "received unexpected event #{shape} (#{event.class.name})"
+          end
+        end
+
         private
 
         def self.classify_http_response(response)
@@ -439,7 +463,7 @@ module Gapic
 
         # Executes event loop until terminal state.
         #
-        # @return [Faraday::Response] Final response
+        # @return [String, Object] Final response body
         def run
           pending_event = Event::StartUpload
 
@@ -470,7 +494,7 @@ module Gapic
               when Instruction::SendCancel
                 pending_event = execute_send_cancel(instruction)
               when Instruction::TerminateSuccess
-                return instruction.response
+                return instruction.response.respond_to?(:body) ? instruction.response.body : instruction.response
               when Instruction::TerminateFailure
                 raise instruction.error
               end

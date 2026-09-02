@@ -381,10 +381,63 @@ class RulesTest < Minitest::Test
     assert_instance_of Instruction::TerminateFailure, instructions.first
   end
 
-  def test_invalid_transition_raises_error
-    state = State.new status: :initializing
-    assert_raises InvalidTransitionError do
-      Rules.step state, Event::ChunkRead.new(bytes_buffered: 512, eof: false), @config
+  def test_invalid_transition_raises_actionable_error_with_response_details_and_header
+    state = State.new status: :transmission_sending
+    response = Event::HttpResponse.new(
+      status:  200,
+      headers: { "X-Goog-Upload-Status" => "final" },
+      body:    '{"done":true}'
+    )
+
+    err = assert_raises InvalidTransitionError do
+      Rules.step state, response, @config
     end
+
+    assert_equal(
+      "Resumable upload failed while sending a chunk of data: " \
+      "received an unexpected HTTP 200 response (X-Goog-Upload-Status: 'final').",
+      err.message
+    )
+    assert_same response, err.response
+    assert_same response, err.event
+    assert_equal :transmission_sending, err.state
+  end
+
+  def test_invalid_transition_shows_missing_when_upload_status_header_absent
+    state = State.new status: :transmission_reading
+    response = Event::HttpResponse.new(
+      status:  200,
+      headers: {},
+      body:    ""
+    )
+
+    err = assert_raises InvalidTransitionError do
+      Rules.step state, response, @config
+    end
+
+    assert_equal(
+      "Resumable upload failed while reading chunk from stream: " \
+      "received an unexpected HTTP 200 response (X-Goog-Upload-Status: missing).",
+      err.message
+    )
+    assert_same response, err.response
+    assert_equal :transmission_reading, err.state
+  end
+
+  def test_invalid_transition_raises_error_for_non_http_event
+    state = State.new status: :starting
+    event = Event::ChunkRead.new bytes_buffered: 512, eof: false
+    err = assert_raises InvalidTransitionError do
+      Rules.step state, event, @config
+    end
+
+    assert_equal(
+      "Resumable upload failed while initiating upload session: " \
+      "received unexpected stream chunk read (512 bytes, eof: false).",
+      err.message
+    )
+    assert_nil err.response
+    assert_same event, err.event
+    assert_equal :starting, err.state
   end
 end

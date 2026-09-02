@@ -76,7 +76,6 @@ module Gapic
         :in_flight_length,   # [Integer] Byte length of in-flight chunk currently being transmitted
         :last_error          # [StandardError, nil] Terminal exception
       ) do
-      # def eql?, def hash etc
       end
     end
   end
@@ -103,7 +102,7 @@ end
 *   `Instruction::RealignBuffer.new(server_offset:)`: Realign Driver in-memory buffer and stream position to match `server_offset`.
 *   `Instruction::FillBuffer.new(target_bytesize:)`: Read from stream until in-memory buffer reaches `target_bytesize` bytes or stream encounters EOF.
 *   `Instruction::NotifyProgress.new(bytes_uploaded:, total_bytes:)`: Invoke `on_progress` callback.
-*   `Instruction::TerminateSuccess.new(response:)`: Upload finalized cleanly; return response.
+*   `Instruction::TerminateSuccess.new(response:)`: Upload finalized cleanly; Driver returns `response.body`.
 *   `Instruction::TerminateFailure.new(error:)`: Raise terminal exception.
 
 ### 2.5 Driver Buffer Invariants & Stream Position Model
@@ -173,7 +172,7 @@ The Driver categorizes instructions into three execution types:
     *   Execute physical stream reads or HTTP requests (wrapped in `Gapic::Common::RetryPolicy` for Category 1 transient errors).
     *   Yield a single resulting `Event` (`ChunkRead`, `HttpResponse`, or `RequestFailed`) that becomes the input for the next cycle.
 3.  **Terminal Handlers** (`TerminateSuccess`, `TerminateFailure`):
-    *   Break the event loop and return the final `Faraday::Response` or raise the terminal exception.
+    *   Break the event loop and return the final response body string (`response.body`) or raise the terminal exception.
 
 Full implementation: [reference-implementation.md#3-driver-class](reference-implementation.md#3-driver-class)
 
@@ -238,6 +237,7 @@ Full implementation: [reference-implementation.md#3-driver-class](reference-impl
 | **`Cancelling`** | `:response_rejected` | `Event::HttpResponse(non-200, headers, _)` with `Status: final` | `status = :rejected` | `Rejected` | `Instruction::TerminateFailure.new(error: Gapic::Common::UploadRejectedError.new(event.body))` |
 | **`Cancelling`** | `:request_retries_exhausted` / `:request_connection_failed` / `:response_fatal_bad_response` | `Event::RequestFailed` or HTTP failure | `last_error = error`<br/>`status = :error` | `Error` | `Instruction::TerminateFailure.new(error: state.last_error)` |
 | **Any Non-Terminal** | `:global_deadline_exceeded` | `Event::GlobalDeadlineExceeded` | `last_error = Gapic::Common::DeadlineExceededError.new`<br/>`status = :error` | `Error` | `Instruction::TerminateFailure.new(error: state.last_error)` |
+| **Any State** | *Unmatched* | Any event not matched above | — | — | `fail_with_unmatched_transition(state, event)`: raises `InvalidTransitionError` stating in human terms what the protocol was doing (e.g. sending a chunk of data), what happened including HTTP status and `X-Goog-Upload-Status` header, and attaches the response. |
 
 ### 4.3 State Transition Graph
 

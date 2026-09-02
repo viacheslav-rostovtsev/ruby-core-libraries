@@ -32,6 +32,20 @@ module Gapic
         DEFAULT_CHUNK_SIZE = 8_388_608 # 8 MB
         CAT2_STATUS_CODES = [400, 408, 409, 412, 416, 429, 499].freeze
         FATAL_STATUS_CODES = [401, 403, 404, 405, 410, 413, 415].freeze
+        STATE_DESCRIPTIONS = {
+          initializing:                "initializing upload",
+          starting:                    "initiating upload session",
+          transmission_reading:        "reading chunk from stream",
+          transmission_sending:        "sending a chunk of data",
+          finalizing_sending_upload:   "sending final data chunk",
+          finalizing_sending_finalize: "sending finalize command",
+          recovery:                    "querying upload offset for recovery",
+          cancelling:                  "cancelling upload session",
+          success:                     "in completed upload state",
+          cancelled:                   "in cancelled upload state",
+          error:                       "in error state",
+          rejected:                    "in rejected upload state"
+        }.freeze
 
         ##
         # Classifies incoming event into a canonical shape symbol.
@@ -103,14 +117,19 @@ module Gapic
             fail_with_deadline_exceeded state
           in [_, :user_cancel]
             cancel_session state
-          in [_, :response_rejected]
+          in [:starting | :transmission_sending | :finalizing_sending_upload |
+              :finalizing_sending_finalize | :recovery | :cancelling, :response_rejected]
             fail_with_rejected state, event
-          in [_, :response_cat2 | :response_fatal_bad_response]
+          in [:starting | :cancelling, :response_cat2] |
+             [:starting | :transmission_sending | :finalizing_sending_upload |
+              :finalizing_sending_finalize | :recovery | :cancelling, :response_fatal_bad_response]
             fail_with_bad_response state, event
-          in [_, :request_retries_exhausted | :request_connection_failed | :request_failed_unknown]
+          in [:starting | :transmission_sending | :finalizing_sending_upload |
+              :finalizing_sending_finalize | :recovery | :cancelling,
+              :request_retries_exhausted | :request_connection_failed | :request_failed_unknown]
             fail_with_request_error state, event
           else
-            raise InvalidTransitionError, "Invalid event shape #{shape} for state #{state.status}"
+            fail_with_unmatched_transition state, event
           end
         end
         # rubocop:enable Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity,Metrics/MethodLength
@@ -300,6 +319,30 @@ module Gapic
             last_error:       err
           )
           [next_state, [Instruction::TerminateFailure.new(error: err)]]
+        end
+
+        def self.fail_with_unmatched_transition state, event
+          shape = shape_of event
+          action = STATE_DESCRIPTIONS[state.status] || "processing #{state.status}"
+          happened = describe_event event, shape
+          message = "Resumable upload failed while #{action}: #{happened}."
+          response = event.is_a?(Event::HttpResponse) ? event : nil
+          raise InvalidTransitionError.new(message, state: state.status, event: event, response: response)
+        end
+
+        def self.describe_event event, shape
+          case event
+          when Event::HttpResponse
+            upload_status = event.headers["x-goog-upload-status"] || event.headers["X-Goog-Upload-Status"]
+            status_desc = upload_status ? "'#{upload_status}'" : "missing"
+            "received an unexpected HTTP #{event.status} response (X-Goog-Upload-Status: #{status_desc})"
+          when Event::ChunkRead
+            "received unexpected stream chunk read (#{event.bytes_buffered} bytes, eof: #{event.eof})"
+          when Event::RequestFailed
+            "encountered unexpected request failure (#{event.kind}: #{event.message})"
+          else
+            "received unexpected event #{shape} (#{event.class.name})"
+          end
         end
 
         ##

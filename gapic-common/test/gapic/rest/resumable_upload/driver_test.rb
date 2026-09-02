@@ -55,7 +55,7 @@ class DriverTest < Minitest::Test
     driver = Driver.new client_stub: stub, config: config
     result = driver.run
 
-    assert_equal '{"done":true}', result.body
+    assert_equal '{"done":true}', result
     assert_equal 4, stub.requests.size
     assert_start_request stub.requests[0]
     assert_chunk_request stub.requests[1], offset: "0", length: "4", body: "0123", finalize: false
@@ -76,7 +76,7 @@ class DriverTest < Minitest::Test
     driver = Driver.new client_stub: stub, config: config
     result = driver.run
 
-    assert_equal '{"done":true}', result.body
+    assert_equal '{"done":true}', result
     assert_equal 5, stub.requests.size
     assert_start_request stub.requests[0]
     assert_chunk_request stub.requests[1], offset: "0", length: "4", body: "0123", finalize: false
@@ -125,7 +125,7 @@ class DriverTest < Minitest::Test
     driver = Driver.new client_stub: stub, config: config
     result = driver.run
 
-    assert_equal '{"done":true}', result.body
+    assert_equal '{"done":true}', result
     # 2 start requests + 1 chunk request = 3 requests
     assert_equal 3, stub.requests.size
     assert_start_request stub.requests[0]
@@ -204,7 +204,7 @@ class DriverTest < Minitest::Test
     driver = Driver.new client_stub: stub, config: config
     result = driver.run
 
-    assert_equal '{"done":true}', result.body
+    assert_equal '{"done":true}', result
     # Verify exact sequence: start, chunk, query1, query2, chunk
     assert_equal 5, stub.requests.size
     assert_start_request stub.requests[0]

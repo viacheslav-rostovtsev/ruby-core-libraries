@@ -83,7 +83,7 @@ module Gapic
         ##
         # Executes event loop until terminal state.
         #
-        # @return [Faraday::Response, Object] Final response
+        # @return [String, Object] Final response body
         def run
           pending_event = Event::StartUpload.new
 
@@ -120,7 +120,8 @@ module Gapic
           when Instruction::SendFinalize then execute_send_finalize instruction
           when Instruction::SendQuery then execute_send_query instruction
           when Instruction::SendCancel then execute_send_cancel instruction
-          when Instruction::TerminateSuccess then instruction.response
+          when Instruction::TerminateSuccess
+            instruction.response.respond_to?(:body) ? instruction.response.body : instruction.response
           when Instruction::TerminateFailure then raise instruction.error
           end
         end

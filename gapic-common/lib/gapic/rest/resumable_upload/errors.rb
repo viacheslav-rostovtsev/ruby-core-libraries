@@ -20,9 +20,28 @@ module Gapic
   module Rest
     module ResumableUpload
       ##
-      # Raised when an invalid event is dispatched for the current protocol state.
+      # Raised when an invalid or unmatched event is dispatched for the current protocol state.
       #
       class InvalidTransitionError < Gapic::Common::Error
+        # @return [Gapic::Rest::ResumableUpload::Event::HttpResponse, Object, nil]
+        attr_reader :response
+
+        # @return [Symbol, nil] Current protocol state
+        attr_reader :state
+
+        # @return [Object, nil] Received event
+        attr_reader :event
+
+        # @param message [String]
+        # @param state [Symbol, nil]
+        # @param event [Object, nil]
+        # @param response [Gapic::Rest::ResumableUpload::Event::HttpResponse, Object, nil]
+        def initialize message, state: nil, event: nil, response: nil
+          @state = state
+          @event = event
+          @response = response || (event if defined?(Event::HttpResponse) && event.is_a?(Event::HttpResponse))
+          super message
+        end
       end
 
       ##
