@@ -92,12 +92,12 @@ class RulesTest < Minitest::Test
   end
 
   def test_shape_of_http_response_missing_header
-    [200, 400, 408, 409, 412, 416, 429, 499].each do |code|
+    [200, 400, 408, 409, 412, 416, 429, 499, 500, 502, 503, 504].each do |code|
       resp = Event::HttpResponse.new status: code, headers: {}
       assert_equal :response_cat2, Rules.shape_of(resp), "Status #{code} with missing header should be :response_cat2"
     end
 
-    [401, 403, 404, 405, 410, 413, 415, 500, 503].each do |code|
+    [401, 403, 404, 405, 410, 413, 415].each do |code|
       resp = Event::HttpResponse.new status: code, headers: {}
       assert_equal :response_fatal_bad_response, Rules.shape_of(resp),
                    "Status #{code} with missing header should be :response_fatal_bad_response"

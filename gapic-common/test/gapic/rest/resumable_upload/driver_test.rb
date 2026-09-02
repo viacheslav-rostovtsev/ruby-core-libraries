@@ -63,6 +63,28 @@ class DriverTest < Minitest::Test
     assert_chunk_request stub.requests[3], offset: "8", length: "2", body: "89", finalize: true
   end
 
+  def test_upload_recovers_when_chunk_response_lacks_status_header
+    responses = build_recovery_responses
+    stub = FakeClientStub.new responses
+    config = CompleteUploadConfig.new(
+      initial_url: "https://example.com/upload",
+      stream:      StringIO.new("0123456789"),
+      upload_size: 10,
+      chunk_size:  4
+    )
+
+    driver = Driver.new client_stub: stub, config: config
+    result = driver.run
+
+    assert_equal '{"done":true}', result.body
+    assert_equal 5, stub.requests.size
+    assert_start_request stub.requests[0]
+    assert_chunk_request stub.requests[1], offset: "0", length: "4", body: "0123", finalize: false
+    assert_query_request stub.requests[2]
+    assert_chunk_request stub.requests[3], offset: "4", length: "4", body: "4567", finalize: false
+    assert_chunk_request stub.requests[4], offset: "8", length: "2", body: "89", finalize: true
+  end
+
   private
 
   def build_scripted_responses
@@ -81,9 +103,38 @@ class DriverTest < Minitest::Test
     ]
   end
 
+  def build_recovery_responses
+    [
+      FakeResponse.new(
+        status:  200,
+        headers: {
+          "X-Goog-Upload-URL"    => "https://example.com/session/1",
+          "X-Goog-Upload-Status" => "active"
+        },
+        body:    ""
+      ),
+      FakeResponse.new(status: 503, headers: {}, body: "Service Unavailable"),
+      FakeResponse.new(
+        status:  200,
+        headers: {
+          "X-Goog-Upload-Status"        => "active",
+          "X-Goog-Upload-Size-Received" => "4"
+        },
+        body:    ""
+      ),
+      FakeResponse.new(status: 200, headers: { "X-Goog-Upload-Status" => "active" }, body: ""),
+      FakeResponse.new(status: 200, headers: { "X-Goog-Upload-Status" => "final" }, body: '{"done":true}')
+    ]
+  end
+
   def assert_start_request req
     assert_equal "https://example.com/upload", req[:uri]
     assert_equal "start", req[:options][:metadata]["X-Goog-Upload-Command"]
+  end
+
+  def assert_query_request req
+    assert_equal "https://example.com/session/1", req[:uri]
+    assert_equal "query", req[:options][:metadata]["X-Goog-Upload-Command"]
   end
 
   def assert_chunk_request req, offset:, length:, body:, finalize:

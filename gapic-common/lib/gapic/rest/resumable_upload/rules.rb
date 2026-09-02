@@ -332,10 +332,10 @@ module Gapic
           when "cancelled"
             response.status == 200 ? :response_cancelled : :response_fatal_bad_response
           when nil, ""
-            if response.status == 200 || CAT2_STATUS_CODES.include?(response.status)
-              :response_cat2
-            else
+            if FATAL_STATUS_CODES.include? response.status
               :response_fatal_bad_response
+            else
+              :response_cat2
             end
           else
             :response_fatal_bad_response
