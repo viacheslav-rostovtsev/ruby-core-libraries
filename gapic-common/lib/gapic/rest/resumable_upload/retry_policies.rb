@@ -24,11 +24,12 @@ module Gapic
       #
       module RetryPolicies
         ##
-        # Default retry policy for control plane requests (start, query, cancel).
-        # Missing X-Goog-Upload-Status header is retriable (predicate returns true).
+        # Default retry policy for session initiation requests (start).
+        # Missing X-Goog-Upload-Status header is retriable across any response code,
+        # including 200 (predicate returns true).
         #
         # @return [Gapic::Common::RetryPolicy]
-        def self.default_control_plane
+        def self.default_start
           Gapic::Common::RetryPolicy.new(
             retry_codes:     ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"],
             initial_delay:   1.0,
@@ -42,6 +43,20 @@ module Gapic
               end
               nil
             end
+          )
+        end
+
+        ##
+        # Default retry policy for session control requests (query, cancel).
+        # Does not retry on missing X-Goog-Upload-Status header.
+        #
+        # @return [Gapic::Common::RetryPolicy]
+        def self.default_control_plane
+          Gapic::Common::RetryPolicy.new(
+            retry_codes:   ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"],
+            initial_delay: 1.0,
+            max_delay:     15.0,
+            multiplier:    1.3
           )
         end
 

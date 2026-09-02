@@ -378,15 +378,16 @@ module Gapic
           @core = Core.new(config)
           @buffer = "".b
           @buffer_start_offset = 0
+          @start_retry_policy = config.start_retry_policy || self.class.default_start_retry_policy
           @control_plane_retry_policy = config.control_plane_retry_policy || self.class.default_control_plane_retry_policy
           @data_plane_retry_policy = config.data_plane_retry_policy || self.class.default_data_plane_retry_policy
         end
 
-        # Default retry policy for control plane requests (start, query, cancel).
-        # Missing X-Goog-Upload-Status header is retriable (predicate returns true).
+        # Default retry policy for session initiation requests (start).
+        # Missing X-Goog-Upload-Status header is retriable across any response code, including 200 (predicate returns true).
         #
         # @return [Gapic::Common::RetryPolicy]
-        def self.default_control_plane_retry_policy
+        def self.default_start_retry_policy
           Gapic::Common::RetryPolicy.new(
             retry_codes: ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"],
             initial_delay: 1.0,
@@ -399,6 +400,19 @@ module Gapic
               end
               nil
             end
+          )
+        end
+
+        # Default retry policy for session control requests (query, cancel).
+        # Does not retry on missing X-Goog-Upload-Status header.
+        #
+        # @return [Gapic::Common::RetryPolicy]
+        def self.default_control_plane_retry_policy
+          Gapic::Common::RetryPolicy.new(
+            retry_codes: ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"],
+            initial_delay: 1.0,
+            max_delay: 15.0,
+            multiplier: 1.3
           )
         end
 
@@ -494,13 +508,14 @@ module Gapic
           # Reads from stream until @buffer.bytesize reaches instruction.target_bytesize or stream hits EOF
         end
 
-        # Network operation: wraps start HTTP request in user_override_start_retry_policy or control_plane_retry_policy
+        # Network operation: wraps start HTTP request in user_override_start_retry_policy or start_retry_policy
         # @return [Event::HttpResponse, Event::RequestFailed]
         def execute_send_start(instruction)
-          policy = @config.user_override_start_retry_policy || @control_plane_retry_policy
-          # Executes POST initiation request via @client_stub with policy
+          policy = @config.user_override_start_retry_policy || @start_retry_policy
+          # Executes POST initiation request via @client_stub with policy in a retry loop.
+          # Retries missing X-Goog-Upload-Status header across any response code, including 200 OK.
           # Returns Event::HttpResponse for any completed HTTP response (including 4xx/5xx).
-          # Returns Event::RequestFailed(kind:, message:, source_error:) on unhandled transport error or retry exhaustion.
+          # Returns Event::RequestFailed(kind: :retries_exhausted, ...) on retry exhaustion.
         end
 
         # Network operation: wraps HTTP request in data_plane_retry_policy

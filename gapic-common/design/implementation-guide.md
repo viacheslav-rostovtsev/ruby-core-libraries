@@ -49,7 +49,8 @@ module Gapic
         :chunk_size,                       # [Integer, nil] Explicit chunk size in bytes
         :content_type,                     # [String] MIME type of uploaded media
         :deadline,                         # [Numeric, nil] Absolute monotonic deadline in seconds (Process.clock_gettime(Process::CLOCK_MONOTONIC))
-        :control_plane_retry_policy,       # [Gapic::Common::RetryPolicy, nil] Policy for start/query/cancel
+        :start_retry_policy,               # [Gapic::Common::RetryPolicy, nil] Default policy for start command
+        :control_plane_retry_policy,       # [Gapic::Common::RetryPolicy, nil] Policy for query/cancel commands
         :data_plane_retry_policy,          # [Gapic::Common::RetryPolicy, nil] Policy for upload/finalize
         :user_override_start_retry_policy, # [Gapic::Common::RetryPolicy, nil] Optional user override for start command
         :on_progress                       # [Proc, nil] Callback: ->(bytes_uploaded, total_bytes)
@@ -186,10 +187,11 @@ Full implementation: [reference-implementation.md#3-driver-class](reference-impl
     *   `X-Goog-Upload-Header-Content-Length: config.upload_size` (if known upfront).
 2.  **Offset Extraction**: On `query` responses, the acknowledged byte count is extracted from `X-Goog-Upload-Size-Received` as an integer (`server_offset`).
 3.  **Request Modification on 4xx**: Retrying Category 2 errors requires querying the backend for `server_offset` first.
-4.  **Standard Retry Configuration & Dual Policies**: The Driver manages two distinct retry policy configurations for Category 1 transient errors:
-    *   **Control Plane Policy (`control_plane_retry_policy`)**: Applies to session control requests (`start`, `query`, `cancel`). Configured with standard retry codes (`["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"]`) and network errors (`[Faraday::ConnectionFailed, Faraday::TimeoutError, SocketError]`). Missing `X-Goog-Upload-Status` header is treated as **retriable** (predicate returns `true`).
-    *   **User Override for Start (`user_override_start_retry_policy`)**: If supplied by caller in `CompleteUploadConfig`, this policy overrides `control_plane_retry_policy` exclusively for the `start` command.
-    *   **Data Plane Policy (`data_plane_retry_policy`)**: Applies to data transmission requests (`upload`, `upload,finalize`, and standalone `finalize`). Shares the identical standard retry configuration, but treats a missing `X-Goog-Upload-Status` header as **unretriable** (predicate returns `false`). This prevents blind chunk re-transmission and returns `Event::HttpResponse` immediately to `Core` so it can initiate Category 2 `Recovery`.
+4.  **Standard Retry Configuration & Distinct Policies**: The Driver manages distinct retry policy configurations for Category 1 transient errors:
+    *   **Start Policy (`start_retry_policy`)**: Applies specifically to session initiation (`start`). Configured with standard retry codes (`["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"]`) and network errors (`[Faraday::ConnectionFailed, Faraday::TimeoutError, SocketError]`). A missing or empty `X-Goog-Upload-Status` header is treated as **retriable** (predicate returns `true`) across **any response code, including 200 OK**.
+    *   **User Override for Start (`user_override_start_retry_policy`)**: If supplied by caller in `CompleteUploadConfig`, this policy overrides `start_retry_policy` exclusively for the `start` command.
+    *   **Control Plane Policy (`control_plane_retry_policy`)**: Applies to session control requests (`query`, `cancel`). Configured with standard retry codes and network errors. It does **not** retry on a missing `X-Goog-Upload-Status` header, allowing `Core` to evaluate responses immediately.
+    *   **Data Plane Policy (`data_plane_retry_policy`)**: Applies to data transmission requests (`upload`, `upload,finalize`, and standalone `finalize`). Shares the standard retry codes and network errors, but treats a missing `X-Goog-Upload-Status` header as **unretriable** (predicate returns `false`). This prevents blind chunk re-transmission and returns `Event::HttpResponse` immediately to `Core` so it can initiate Category 2 `Recovery`.
 
 ### 4.2 State Transition & Data Mutation Specification
 
@@ -342,9 +344,10 @@ The implementation distinguishes three categories of network and protocol-level 
     1.  **Non-200 Active Responses**: Any response with `X-Goog-Upload-Status: active` where HTTP status is non-200.
     2.  **Missing or Empty `X-Goog-Upload-Status` Header**: Any response lacking `X-Goog-Upload-Status` (or empty) whose HTTP status is **not** in `FATAL_STATUS_CODES` (Section 6.1.3). This includes HTTP 200, 5xx server/gateway errors (`500`, `502`, `503`, `504`), and recoverable client errors (`400`, `408`, `409`, `412`, `416`, `429`, `499`).
     3.  **Unretried Data Plane Connection Drops**: `Event::RequestFailed(kind: :connection_failed)` occurring during `Transmission` or `Finalizing`.
-*   **Missing Header Handling & Dual Retry Policy Contract**:
+*   **Missing Header Handling & Retry Policy Contract**:
     *   *Why Headers Go Missing*: Intermediate proxies, reverse-proxies, or Google Front End (GFE) edge proxies can strip Scotty response headers or return raw HTML/text error pages on failure.
-    *   *Control Plane (`start`, `query`, `cancel`)*: Missing `X-Goog-Upload-Status` is treated as **retriable** by `control_plane_retry_policy` (retry predicate returns `true`). Driver retries transparently to smooth over transient gateway noise. If retries exhaust, `Starting` transitions to `:error` via `fail_with_request_error` or `fail_with_bad_response` (cannot recover a session before upload URL is obtained).
+    *   *Session Initiation (`start`)*: Missing `X-Goog-Upload-Status` is treated as **retriable** by `start_retry_policy` (retry predicate returns `true`) across **any response code, including 200 OK**. Driver retries transparently to smooth over transient gateway noise. If retries exhaust, `Starting` transitions to `:error` via `fail_with_request_error` or `fail_with_bad_response` (cannot recover a session before an upload URL is obtained).
+    *   *Session Control (`query`, `cancel`)*: `control_plane_retry_policy` does **not** treat missing status headers as retriable, returning the completed `Event::HttpResponse` immediately to `Core` so it can manage protocol recovery or fail fast.
     *   *Data Plane (`upload`, `upload, finalize`, standalone `finalize`)*: Missing `X-Goog-Upload-Status` is treated as **unretriable** by `data_plane_retry_policy` (retry predicate returns `false`). The Driver immediately returns `Event::HttpResponse` to `Core` so it classifies as `:response_cat2` and initiates Category 2 `Recovery` via `Instruction::SendQuery` rather than blindly re-transmitting data.
 *   **Resolution**: Core transitions to `Recovery` and emits `Instruction::SendQuery.new(url: state.upload_url)` to obtain `server_offset`.
 

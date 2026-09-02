@@ -31,6 +31,7 @@ module Gapic
       # Coordinates HTTP network operations, stream buffering, monotonic deadlines,
       # and delegates state transitions to Core.
       #
+      # rubocop:disable Metrics/ClassLength
       class Driver
         include Gapic::LoggingConcerns
 
@@ -47,6 +48,8 @@ module Gapic
           @core = Core.new config
           @buffer = "".b
           @buffer_start_offset = 0
+          @start_retry_policy = config.start_retry_policy ||
+                                self.class.default_start_retry_policy
           @control_plane_retry_policy = config.control_plane_retry_policy ||
                                         self.class.default_control_plane_retry_policy
           @data_plane_retry_policy = config.data_plane_retry_policy ||
@@ -54,7 +57,15 @@ module Gapic
         end
 
         ##
-        # Default retry policy for control plane requests (start, query, cancel).
+        # Default retry policy for session initiation requests (start).
+        #
+        # @return [Gapic::Common::RetryPolicy]
+        def self.default_start_retry_policy
+          RetryPolicies.default_start
+        end
+
+        ##
+        # Default retry policy for control plane requests (query, cancel).
         #
         # @return [Gapic::Common::RetryPolicy]
         def self.default_control_plane_retry_policy
@@ -95,7 +106,8 @@ module Gapic
         private
 
         def pending_event_type? obj
-          obj.is_a?(Event::ChunkRead) || obj.is_a?(Event::HttpResponse) || obj.is_a?(Event::RequestFailed)
+          obj.is_a?(Event::ChunkRead) || obj.is_a?(Event::HttpResponse) ||
+            obj.is_a?(Event::RequestFailed) || obj.is_a?(Event::GlobalDeadlineExceeded)
         end
 
         def dispatch_instruction instruction
@@ -196,13 +208,32 @@ module Gapic
         end
 
         def execute_send_start instruction
-          policy = @config.user_override_start_retry_policy || @control_plane_retry_policy
+          policy = (@config.user_override_start_retry_policy || @start_retry_policy).dup.start!
+          headers = start_headers instruction
+
+          loop do
+            return Event::GlobalDeadlineExceeded.new if deadline_exceeded?
+
+            event = make_post_request instruction.url, headers: headers, body: instruction.body, retry_policy: policy
+            return event unless event.is_a? Event::HttpResponse
+
+            status_hdr = event.headers["x-goog-upload-status"] || event.headers["X-Goog-Upload-Status"]
+            return event unless status_hdr.nil? || status_hdr.empty?
+
+            err = Gapic::Common::BadResponseError.new event.status,
+                                                      "Missing X-Goog-Upload-Status header in start response"
+            can_retry = policy.send(:retry_with_deadline?) && policy.call(event)
+            unless can_retry
+              return Event::RequestFailed.new kind: :retries_exhausted, message: err.message, source_error: err
+            end
+          end
+        end
+
+        def start_headers instruction
           headers = { "X-Goog-Upload-Protocol" => "resumable", "X-Goog-Upload-Command" => "start" }
           headers["X-Goog-Upload-Header-Content-Type"] = @config.content_type if @config.content_type
           headers["X-Goog-Upload-Header-Content-Length"] = @config.upload_size.to_s if @config.upload_size
-          headers = headers.merge(instruction.headers || {})
-
-          make_post_request instruction.url, headers: headers, body: instruction.body, retry_policy: policy
+          headers.merge(instruction.headers || {})
         end
 
         def execute_send_chunk instruction
@@ -215,7 +246,8 @@ module Gapic
           slice_index = instruction.offset - @buffer_start_offset
           body = @buffer.byteslice slice_index, instruction.length
 
-          make_post_request instruction.url, headers: headers, body: body, retry_policy: @data_plane_retry_policy
+          make_post_request instruction.url, headers: headers, body: body,
+                            retry_policy: @data_plane_retry_policy.dup.start!
         end
 
         def execute_send_finalize instruction
@@ -224,21 +256,24 @@ module Gapic
             "X-Goog-Upload-Offset"  => @core.state.offset.to_s,
             "Content-Length"        => "0"
           }
-          make_post_request instruction.url, headers: headers, body: "", retry_policy: @data_plane_retry_policy
+          make_post_request instruction.url, headers: headers, body: "",
+                            retry_policy: @data_plane_retry_policy.dup.start!
         end
 
         def execute_send_query instruction
           headers = { "X-Goog-Upload-Command" => "query", "Content-Length" => "0" }
-          make_post_request instruction.url, headers: headers, body: "", retry_policy: @control_plane_retry_policy
+          make_post_request instruction.url, headers: headers, body: "",
+                            retry_policy: @control_plane_retry_policy.dup.start!
         end
 
         def execute_send_cancel instruction
           headers = { "X-Goog-Upload-Command" => "cancel", "Content-Length" => "0" }
-          make_post_request instruction.url, headers: headers, body: "", retry_policy: @control_plane_retry_policy
+          make_post_request instruction.url, headers: headers, body: "",
+                            retry_policy: @control_plane_retry_policy.dup.start!
         end
 
         def make_post_request url, headers:, body:, retry_policy:
-          options = { metadata: headers, retry_policy: retry_policy.dup.start! }
+          options = { metadata: headers, retry_policy: retry_policy }
           @logger&.debug do
             "ResumableUpload::Driver: POST #{url} (offset: #{@core.state.offset}, " \
               "chunk_size: #{@core.state.chunk_size})"
@@ -280,6 +315,7 @@ module Gapic
           end
         end
       end
+      # rubocop:enable Metrics/ClassLength
     end
   end
 end
