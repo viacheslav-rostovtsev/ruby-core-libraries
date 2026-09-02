@@ -261,6 +261,33 @@ class RulesTest < Minitest::Test
     assert_instance_of Instruction::SendQuery, instructions.first
   end
 
+  def test_transition_transmission_sending_connection_failed_triggers_recovery
+    state = State.new status: :transmission_sending, upload_url: "https://example.com/session", offset: 0,
+                      in_flight_length: 512
+    req_failed = Event::RequestFailed.new kind: :connection_failed, message: "Network unreachable"
+    next_state, instructions = Rules.step state, req_failed, @config
+
+    assert_equal :recovery, next_state.status
+    assert_equal 0, next_state.in_flight_length
+    assert_equal 1, instructions.size
+    assert_instance_of Instruction::SendQuery, instructions.first
+  end
+
+  def test_transition_transmission_sending_retries_exhausted_terminates_failure
+    state = State.new status: :transmission_sending, upload_url: "https://example.com/session", offset: 0,
+                      in_flight_length: 512
+    err = StandardError.new "Retries exhausted"
+    req_failed = Event::RequestFailed.new kind: :retries_exhausted, message: "Retries exhausted", source_error: err
+    next_state, instructions = Rules.step state, req_failed, @config
+
+    assert_equal :error, next_state.status
+    assert_equal 0, next_state.in_flight_length
+    assert_equal err, next_state.last_error
+    assert_equal 1, instructions.size
+    assert_instance_of Instruction::TerminateFailure, instructions.first
+    assert_equal err, instructions.first.error
+  end
+
   def test_transition_finalizing_sending_upload_success
     state = State.new status: :finalizing_sending_upload, offset: 512, in_flight_length: 512
     resp = Event::HttpResponse.new status: 200, headers: { "x-goog-upload-status" => "final" }, body: '{"done":true}'

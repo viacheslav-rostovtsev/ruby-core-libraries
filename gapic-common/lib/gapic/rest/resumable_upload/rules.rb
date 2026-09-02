@@ -85,7 +85,7 @@ module Gapic
           in [:transmission_sending, :response_active]
             ack_chunk state, config
           in [:transmission_sending | :finalizing_sending_upload | :finalizing_sending_finalize,
-              :response_cat2 | :request_retries_exhausted | :request_connection_failed]
+              :response_cat2 | :request_connection_failed]
             enter_recovery state
           in [:finalizing_sending_upload, :response_final]
             complete_upload_with_data state, event
