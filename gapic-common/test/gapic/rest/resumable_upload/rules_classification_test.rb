@@ -190,4 +190,53 @@ class RulesClassificationTest < Minitest::Test
     assert_equal :unknown, Rules.shape_of(nil)
     assert_equal :unknown, Rules.shape_of("unrecognized_event")
   end
+
+  def test_resolve_chunk_size_with_nil_or_non_positive_granularity
+    # nil granularity
+    assert_equal 1024, Rules.resolve_chunk_size(1024, nil)
+    assert_equal Rules::DEFAULT_CHUNK_SIZE, Rules.resolve_chunk_size(nil, nil)
+
+    # 0 granularity
+    assert_equal 1024, Rules.resolve_chunk_size(1024, 0)
+    assert_equal Rules::DEFAULT_CHUNK_SIZE, Rules.resolve_chunk_size(nil, 0)
+
+    # Negative granularity
+    assert_equal 1024, Rules.resolve_chunk_size(1024, -256)
+    assert_equal Rules::DEFAULT_CHUNK_SIZE, Rules.resolve_chunk_size(nil, -1)
+  end
+
+  def test_resolve_chunk_size_when_divisible
+    # User-specified evenly divides granularity
+    assert_equal 1024, Rules.resolve_chunk_size(1024, 256)
+    assert_equal 1_048_576, Rules.resolve_chunk_size(1_048_576, 262_144)
+
+    # Default chunk size (8_388_608) evenly divides 256 KB standard Scotty granularity
+    assert_equal 8_388_608, Rules.resolve_chunk_size(nil, 262_144)
+    assert_equal 8_388_608, Rules.resolve_chunk_size(nil, 524_288)
+  end
+
+  def test_resolve_chunk_size_when_not_divisible_rounds_down
+    # User-specified rounds down to nearest multiple
+    assert_equal 768, Rules.resolve_chunk_size(1000, 256)
+    assert_equal 9_961_472, Rules.resolve_chunk_size(10_000_000, 262_144)
+
+    # Default chunk size (8_388_608) rounds down with non-divisor granularity (500_000 * 16)
+    assert_equal 8_000_000, Rules.resolve_chunk_size(nil, 500_000)
+    assert_equal 8_192_000, Rules.resolve_chunk_size(nil, 1_024_000)
+  end
+
+  def test_resolve_chunk_size_when_granularity_equal_to_chunk_size
+    assert_equal 256, Rules.resolve_chunk_size(256, 256)
+    assert_equal 262_144, Rules.resolve_chunk_size(262_144, 262_144)
+    assert_equal 8_388_608, Rules.resolve_chunk_size(nil, 8_388_608)
+  end
+
+  def test_resolve_chunk_size_when_granularity_greater_than_chunk_size
+    # User chunk size strictly less than granularity promotes to granularity (avoids 0)
+    assert_equal 256, Rules.resolve_chunk_size(100, 256)
+    assert_equal 262_144, Rules.resolve_chunk_size(1, 262_144)
+
+    # Default chunk size strictly less than large server granularity promotes to granularity
+    assert_equal 16_777_216, Rules.resolve_chunk_size(nil, 16_777_216)
+  end
 end
