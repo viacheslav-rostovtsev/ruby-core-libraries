@@ -167,7 +167,7 @@ The `Driver` is the synchronous execution engine for the pure protocol state mac
 The Driver categorizes instructions into three execution types:
 1.  **Synchronous Side-Effects** (`NotifyProgress`, `RealignBuffer`):
     *   Executed immediately in-process.
-    *   Do not yield a new `Event` and do not break the batch loop.
+    *   Do not yield a new `Event` and do not break the batch loop. Exceptions raised within user callbacks (e.g. `on_progress`) are not swallowed and immediately propagate to the caller.
 2.  **I/O & Network Operations** (`FillBuffer`, `SendStart`, `SendChunk`, `SendFinalize`, `SendQuery`, `SendCancel`):
     *   Execute physical stream reads or HTTP requests (wrapped in `Gapic::Common::RetryPolicy` for Category 1 transient errors).
     *   Yield a single resulting `Event` (`ChunkRead`, `HttpResponse`, or `RequestFailed`) that becomes the input for the next cycle.

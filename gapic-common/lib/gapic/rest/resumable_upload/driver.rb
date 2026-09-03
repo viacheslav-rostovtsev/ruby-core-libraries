@@ -140,8 +140,6 @@ module Gapic
 
         def execute_notify_progress instruction
           @config.on_progress&.call instruction.bytes_uploaded, instruction.total_bytes
-        rescue StandardError => e
-          @logger&.warn { "User progress callback raised exception: #{e.message}" }
         end
 
         def execute_realign_buffer instruction

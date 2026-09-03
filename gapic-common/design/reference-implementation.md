@@ -514,11 +514,9 @@ module Gapic
           instructions.any? { |i| i.is_a?(Instruction::TerminateSuccess) || i.is_a?(Instruction::TerminateFailure) }
         end
 
-        # Synchronous side-effect: invokes user callback safely
+        # Synchronous side-effect: invokes user callback (exceptions propagate to caller)
         def execute_notify_progress(instruction)
           @config.on_progress&.call(instruction.bytes_uploaded, instruction.total_bytes)
-        rescue StandardError => e
-          @logger&.warn { "User progress callback raised exception: #{e.message}" }
         end
 
         # Synchronous side-effect: adjusts in-memory buffer window and stream
