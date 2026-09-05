@@ -86,8 +86,8 @@ end
 *   `Event::StartUpload`: Start the upload session.
 *   `Event::ChunkRead.new(bytes_buffered:, eof:)`: Binary data buffered in Driver memory; reports total bytes ready in buffer and whether the stream hit EOF.
 *   `Event::HttpResponse.new(status:, headers:, body:)`: Dispatched for any completed HTTP exchange over the wire (including 2xx, 4xx, 5xx, or responses with missing/unexpected headers). `Core` inspects status and headers to determine protocol progression or recovery.
-*   `Event::RequestFailed.new(kind:, message:, source_error:)`: Dispatched when an HTTP request fails to produce a usable HTTP response (e.g., transport connection errors or `RetryPolicy` exhaustion).
-    *   `kind`: Normalized Symbol enum (`:retries_exhausted`, `:connection_failed`). `Core` branches on `kind` and treats other fields as opaque.
+*   `Event::RequestFailed.new(kind:, message:, source_error:)`: Dispatched when an HTTP request fails to produce a usable HTTP response (e.g., request timeout, transport connection errors, or `RetryPolicy` exhaustion).
+    *   `kind`: Normalized Symbol enum (`:timeout`, `:connection_failed`, `:retries_exhausted`). `Core` branches on `kind` and treats other fields as opaque.
     *   `message`: Human-readable summary string.
     *   `source_error`: Original underlying exception, preserved for terminal error propagation and logging.
 *   `Event::Cancel`: Caller requested session cancellation.
@@ -343,7 +343,7 @@ The implementation distinguishes three categories of network and protocol-level 
 *   **Conditions Producing `:response_cat2`**:
     1.  **Non-200 Active Responses**: Any response with `X-Goog-Upload-Status: active` where HTTP status is non-200.
     2.  **Missing or Empty `X-Goog-Upload-Status` Header**: Any response lacking `X-Goog-Upload-Status` (or empty) whose HTTP status is **not** in `FATAL_STATUS_CODES` (Section 6.1.3). This includes HTTP 200, 5xx server/gateway errors (`500`, `502`, `503`, `504`), and recoverable client errors (`400`, `408`, `409`, `412`, `416`, `429`, `499`).
-    3.  **Unretried Data Plane Connection Drops**: `Event::RequestFailed(kind: :connection_failed)` occurring during `Transmission` or `Finalizing`.
+    3.  **Unretried Data Plane Connection Drops or Request Timeouts**: `Event::RequestFailed(kind: :connection_failed)` or `Event::RequestFailed(kind: :timeout)` (`:request_connection_failed`, `:request_timeout`) occurring during `Transmission` or `Finalizing`.
 *   **Missing Header Handling & Retry Policy Contract**:
     *   *Why Headers Go Missing*: Intermediate proxies, reverse-proxies, or Google Front End (GFE) edge proxies can strip Scotty response headers or return raw HTML/text error pages on failure.
     *   *Session Initiation (`start`)*: Missing `X-Goog-Upload-Status` is treated as **retriable** by `start_retry_policy` (retry predicate returns `true`) across **any response code, including 200 OK**. Driver retries transparently to smooth over transient gateway noise. If retries exhaust, `Starting` transitions to `:error` via `fail_with_request_error` or `fail_with_bad_response` (cannot recover a session before an upload URL is obtained).

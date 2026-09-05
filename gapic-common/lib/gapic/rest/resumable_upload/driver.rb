@@ -305,7 +305,7 @@ module Gapic
         def rescue_request_error err
           case err
           when Gapic::Rest::DeadlineExceededError
-            Event::RequestFailed.new kind: :retries_exhausted, message: err.message, source_error: err
+            Event::RequestFailed.new kind: :timeout, message: err.message, source_error: err
           when Gapic::Rest::Error
             if err.status_code
               Event::HttpResponse.new status: err.status_code, headers: err.headers || {}, body: err.message
@@ -326,7 +326,9 @@ module Gapic
               headers: err.response[:headers] || {},
               body:    err.response[:body]
             )
-          elsif err.is_a?(Faraday::TimeoutError) || err.is_a?(Faraday::ConnectionFailed)
+          elsif err.is_a? Faraday::TimeoutError
+            Event::RequestFailed.new kind: :timeout, message: err.message, source_error: err
+          elsif err.is_a? Faraday::ConnectionFailed
             Event::RequestFailed.new kind: :connection_failed, message: err.message, source_error: err
           else
             Event::RequestFailed.new kind: :retries_exhausted, message: err.message, source_error: err

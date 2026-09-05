@@ -170,7 +170,10 @@ class RulesClassificationTest < Minitest::Test
   end
 
   def test_shape_of_request_failed
-    exhausted = Event::RequestFailed.new kind: :retries_exhausted, message: "timeout"
+    timeout = Event::RequestFailed.new kind: :timeout, message: "read timeout"
+    assert_equal :request_timeout, Rules.shape_of(timeout)
+
+    exhausted = Event::RequestFailed.new kind: :retries_exhausted, message: "exhausted"
     assert_equal :request_retries_exhausted, Rules.shape_of(exhausted)
 
     conn_failed = Event::RequestFailed.new kind: :connection_failed, message: "dropped"

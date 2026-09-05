@@ -99,7 +99,7 @@ module Gapic
           in [:transmission_sending, :response_active]
             ack_chunk state, config
           in [:transmission_sending | :finalizing_sending_upload | :finalizing_sending_finalize,
-              :response_cat2 | :request_connection_failed]
+              :response_cat2 | :request_connection_failed | :request_timeout]
             enter_recovery state
           in [:finalizing_sending_upload, :response_final]
             complete_upload_with_data state, event
@@ -126,7 +126,7 @@ module Gapic
             fail_with_bad_response state, event
           in [:starting | :transmission_sending | :finalizing_sending_upload |
               :finalizing_sending_finalize | :recovery | :cancelling,
-              :request_retries_exhausted | :request_connection_failed | :request_failed_unknown]
+              :request_retries_exhausted | :request_connection_failed | :request_timeout | :request_failed_unknown]
             fail_with_request_error state, event
           else
             fail_with_unmatched_transition state, event
@@ -412,6 +412,7 @@ module Gapic
 
         def self.classify_request_failed event
           case event.kind
+          when :timeout then :request_timeout
           when :retries_exhausted then :request_retries_exhausted
           when :connection_failed then :request_connection_failed
           else :request_failed_unknown

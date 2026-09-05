@@ -58,7 +58,7 @@ class DriverErrorMappingTest < Minitest::Test
     event = @driver.send :rescue_request_error, err
 
     assert_instance_of Event::RequestFailed, event
-    assert_equal :retries_exhausted, event.kind
+    assert_equal :timeout, event.kind
     assert_equal "RPC deadline exceeded", event.message
     assert_same err, event.source_error
 
@@ -67,7 +67,7 @@ class DriverErrorMappingTest < Minitest::Test
     integration_event = @driver.send :make_post_request, "https://example.com", headers: {}, body: "",
                                                                                 retry_policy: nil
     assert_instance_of Event::RequestFailed, integration_event
-    assert_equal :retries_exhausted, integration_event.kind
+    assert_equal :timeout, integration_event.kind
     assert_same err, integration_event.source_error
   end
 
@@ -158,7 +158,7 @@ class DriverErrorMappingTest < Minitest::Test
     event = @driver.send :rescue_faraday_error, err
 
     assert_instance_of Event::RequestFailed, event
-    assert_equal :connection_failed, event.kind
+    assert_equal :timeout, event.kind
     assert_equal "Net::ReadTimeout with https://example.com", event.message
     assert_same err, event.source_error
 
@@ -167,7 +167,7 @@ class DriverErrorMappingTest < Minitest::Test
     integration_event = @driver.send :make_post_request, "https://example.com", headers: {}, body: "",
                                                                                 retry_policy: nil
     assert_instance_of Event::RequestFailed, integration_event
-    assert_equal :connection_failed, integration_event.kind
+    assert_equal :timeout, integration_event.kind
     assert_same err, integration_event.source_error
   end
 

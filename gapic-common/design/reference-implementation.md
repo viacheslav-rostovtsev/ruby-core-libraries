@@ -42,6 +42,7 @@ module Gapic
             :global_deadline_exceeded
           when Event::RequestFailed
             case event.kind
+            when :timeout           then :request_timeout
             when :retries_exhausted then :request_retries_exhausted
             when :connection_failed then :request_connection_failed
             else                        :request_failed_unknown
@@ -75,7 +76,7 @@ module Gapic
             send_finalize(state)
           in [:transmission_sending, :response_active]
             ack_chunk(state, config)
-          in [:transmission_sending | :finalizing_sending_upload | :finalizing_sending_finalize, :response_cat2 | :request_connection_failed]
+          in [:transmission_sending | :finalizing_sending_upload | :finalizing_sending_finalize, :response_cat2 | :request_connection_failed | :request_timeout]
             enter_recovery(state)
           in [:finalizing_sending_upload, :response_final]
             complete_upload_with_data(state, event)
@@ -99,7 +100,7 @@ module Gapic
             fail_with_rejected(state, event)
           in [_, :response_cat2 | :response_fatal_bad_response]
             fail_with_bad_response(state, event)
-          in [_, :request_retries_exhausted | :request_connection_failed | :request_failed_unknown]
+          in [_, :request_retries_exhausted | :request_connection_failed | :request_timeout | :request_failed_unknown]
             fail_with_request_error(state, event)
           else
             fail_with_unmatched_transition(state, event)

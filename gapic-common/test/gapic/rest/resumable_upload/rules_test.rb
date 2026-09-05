@@ -57,6 +57,9 @@ class RulesTest < Minitest::Test
   end
 
   def test_shape_of_request_failed
+    timeout = Event::RequestFailed.new kind: :timeout
+    assert_equal :request_timeout, Rules.shape_of(timeout)
+
     retries = Event::RequestFailed.new kind: :retries_exhausted
     assert_equal :request_retries_exhausted, Rules.shape_of(retries)
 
@@ -271,6 +274,44 @@ class RulesTest < Minitest::Test
     assert_equal 0, next_state.in_flight_length
     assert_equal 1, instructions.size
     assert_instance_of Instruction::SendQuery, instructions.first
+  end
+
+  def test_transition_transmission_sending_timeout_triggers_recovery
+    state = State.new status: :transmission_sending, upload_url: "https://example.com/session", offset: 0,
+                      in_flight_length: 512
+    req_failed = Event::RequestFailed.new kind: :timeout, message: "Read timeout"
+    next_state, instructions = Rules.step state, req_failed, @config
+
+    assert_equal :recovery, next_state.status
+    assert_equal 0, next_state.in_flight_length
+    assert_equal 1, instructions.size
+    assert_instance_of Instruction::SendQuery, instructions.first
+  end
+
+  def test_transition_finalizing_sending_upload_timeout_triggers_recovery
+    state = State.new status: :finalizing_sending_upload, upload_url: "https://example.com/session", offset: 512,
+                      in_flight_length: 512
+    req_failed = Event::RequestFailed.new kind: :timeout, message: "Read timeout"
+    next_state, instructions = Rules.step state, req_failed, @config
+
+    assert_equal :recovery, next_state.status
+    assert_equal 0, next_state.in_flight_length
+    assert_equal 1, instructions.size
+    assert_instance_of Instruction::SendQuery, instructions.first
+  end
+
+  def test_transition_starting_timeout_terminates_failure
+    state = State.new status: :starting
+    err = StandardError.new "Read timeout"
+    req_failed = Event::RequestFailed.new kind: :timeout, message: "Read timeout", source_error: err
+    next_state, instructions = Rules.step state, req_failed, @config
+
+    assert_equal :error, next_state.status
+    assert_equal 0, next_state.in_flight_length
+    assert_equal err, next_state.last_error
+    assert_equal 1, instructions.size
+    assert_instance_of Instruction::TerminateFailure, instructions.first
+    assert_equal err, instructions.first.error
   end
 
   def test_transition_transmission_sending_retries_exhausted_terminates_failure

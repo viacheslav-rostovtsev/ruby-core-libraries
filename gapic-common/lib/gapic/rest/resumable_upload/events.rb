@@ -45,7 +45,14 @@ module Gapic
         end
 
         ##
-        # Signals an HTTP request failure (e.g. transport connection failure or retries exhausted).
+        # Signals an HTTP request failure (e.g. request timeout, transport connection failure, or retries exhausted).
+        #
+        # @!attribute [r] kind
+        #   @return [Symbol] Failure kind: `:timeout`, `:connection_failed`, or `:retries_exhausted`
+        # @!attribute [r] message
+        #   @return [String, nil] Human-readable failure summary
+        # @!attribute [r] source_error
+        #   @return [StandardError, nil] Original underlying exception
         #
         RequestFailed = Data.define :kind, :message, :source_error do
           def initialize kind:, message: nil, source_error: nil
