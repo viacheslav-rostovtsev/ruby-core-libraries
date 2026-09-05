@@ -392,6 +392,12 @@ module Gapic
       class Driver
         include Gapic::LoggingConcerns
 
+        # Minimum assumed upload throughput in bytes per second (1 MB/s)
+        MIN_ASSUMED_THROUGHPUT = 1_048_576
+
+        # Default base timeout in seconds (1 hour)
+        BASE_TIMEOUT = 3_600
+
         # @param client_stub [Gapic::Rest::ClientStub]
         # @param config [CompleteUploadConfig]
         # @param logger [Logger, nil] Optional logger
@@ -465,6 +471,7 @@ module Gapic
         #
         # @return [String, Object] Final response body
         def run
+          @deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + resolve_timeout
           pending_event = Event::StartUpload
 
           loop do
@@ -504,10 +511,20 @@ module Gapic
 
         private
 
-        def deadline_exceeded?
-          return false unless @config.deadline
+        def resolve_timeout
+          return @config.timeout if @config.timeout&.positive?
 
-          Process.clock_gettime(Process::CLOCK_MONOTONIC) > @config.deadline
+          if @config.upload_size
+            [@config.upload_size.fdiv(MIN_ASSUMED_THROUGHPUT), BASE_TIMEOUT].max
+          else
+            BASE_TIMEOUT
+          end
+        end
+
+        def deadline_exceeded?
+          return false unless @deadline
+
+          Process.clock_gettime(Process::CLOCK_MONOTONIC) > @deadline
         end
 
         def terminal_instructions?(instructions)

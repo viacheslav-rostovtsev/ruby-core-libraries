@@ -38,7 +38,7 @@ class DataTypesTest < Minitest::Test
     assert_nil config.upload_size
     assert_nil config.chunk_size
     assert_nil config.content_type
-    assert_nil config.deadline
+    assert_nil config.timeout
     assert_nil config.start_retry_policy
     assert_nil config.control_plane_retry_policy
     assert_nil config.data_plane_retry_policy

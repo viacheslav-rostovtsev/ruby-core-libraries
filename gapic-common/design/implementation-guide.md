@@ -48,7 +48,7 @@ module Gapic
         :upload_size,                      # [Integer, nil] Total upload bytes if known upfront
         :chunk_size,                       # [Integer, nil] Explicit chunk size in bytes
         :content_type,                     # [String] MIME type of uploaded media
-        :deadline,                         # [Numeric, nil] Absolute monotonic deadline in seconds (Process.clock_gettime(Process::CLOCK_MONOTONIC))
+        :timeout,                          # [Numeric, nil] Total upload timeout in seconds (zero/negative treated as nil)
         :start_retry_policy,               # [Gapic::Common::RetryPolicy, nil] Default policy for start command
         :control_plane_retry_policy,       # [Gapic::Common::RetryPolicy, nil] Policy for query/cancel commands
         :data_plane_retry_policy,          # [Gapic::Common::RetryPolicy, nil] Policy for upload/finalize
@@ -91,7 +91,7 @@ end
     *   `message`: Human-readable summary string.
     *   `source_error`: Original underlying exception, preserved for terminal error propagation and logging.
 *   `Event::Cancel`: Caller requested session cancellation.
-*   `Event::GlobalDeadlineExceeded`: Absolute monotonic clock exceeded `config.deadline`.
+*   `Event::GlobalDeadlineExceeded`: Absolute monotonic clock exceeded the session deadline (`@deadline`) computed at the start of `Driver#run`.
 
 ### 2.4 Instructions Vocabulary (Core -> Driver)
 *   `Instruction::SendStart.new(url:, headers:, body:)`: Execute initiation request to establish upload session.
@@ -386,6 +386,24 @@ To realign the upload state, the `Driver` processes `Instruction::RealignBuffer(
     *   If `stream.respond_to?(:seek)`: seeks to `server_offset`.
     *   If unseekable: reads and discards `server_offset - current_stream_pos` bytes from `stream`.
     *   The Driver sets `buffer_start_offset = server_offset`.
+
+### 6.3 Sensible Defaults for Global Deadline
+Every upload session executed via `Driver#run` must have a finite, guaranteed upper bound on total wall-clock execution time. Without a mandatory global deadline, a session encountering repeated Category 2 protocol recoveries or intermittent network stalls could hang indefinitely.
+
+To guarantee termination, `Driver#run` establishes an absolute monotonic deadline at the very start of execution:
+```ruby
+@deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + resolve_timeout
+```
+
+#### Timeout Resolution Algorithm (`resolve_timeout`)
+The total session timeout is resolved in priority order:
+1.  **Explicit User Timeout (`config.timeout`)**: If `config.timeout` is present and strictly positive (`config.timeout&.positive?`), that value is used directly. Zero or negative values are treated as unset (`nil`).
+2.  **Size-Proportional Timeout (`config.upload_size`)**: If total `upload_size` is known upfront, the timeout is computed assuming a minimum sustained upload throughput of `MIN_ASSUMED_THROUGHPUT = 1_048_576` bytes/sec (1 MB/s), floored by `BASE_TIMEOUT = 3_600` seconds (1 hour):
+    ```ruby
+    [config.upload_size.fdiv(MIN_ASSUMED_THROUGHPUT), BASE_TIMEOUT].max
+    ```
+    *Rationale*: Using `BASE_TIMEOUT` as a floor prevents sub-millisecond timeouts for small payloads while scaling linearly for multi-gigabyte uploads.
+3.  **Default Base Timeout (`BASE_TIMEOUT`)**: If neither a positive timeout nor `upload_size` is provided (e.g., streaming uploads of unknown length), the timeout defaults to `BASE_TIMEOUT` (`3_600` seconds).
 
 ---
 

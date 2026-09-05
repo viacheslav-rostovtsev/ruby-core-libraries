@@ -20,6 +20,33 @@ module Gapic
       ##
       # Immutable configuration for initiating and executing a resumable upload session.
       #
+      # @!attribute [r] initial_url
+      #   @return [String] Initial endpoint URI for session initiation
+      # @!attribute [r] initial_body
+      #   @return [String, nil] Request payload for session initiation
+      # @!attribute [r] initial_headers
+      #   @return [Hash<String, String>] Additional headers for initiation
+      # @!attribute [r] stream
+      #   @return [IO] Binary input stream to upload
+      # @!attribute [r] upload_size
+      #   @return [Integer, nil] Total upload bytes if known upfront
+      # @!attribute [r] chunk_size
+      #   @return [Integer, nil] Explicit chunk size in bytes
+      # @!attribute [r] content_type
+      #   @return [String, nil] MIME type of uploaded media
+      # @!attribute [r] timeout
+      #   @return [Numeric, nil] Total upload timeout in seconds (zero/negative values treated as nil)
+      # @!attribute [r] start_retry_policy
+      #   @return [Gapic::Common::RetryPolicy, nil] Default policy for start command
+      # @!attribute [r] control_plane_retry_policy
+      #   @return [Gapic::Common::RetryPolicy, nil] Policy for query/cancel commands
+      # @!attribute [r] data_plane_retry_policy
+      #   @return [Gapic::Common::RetryPolicy, nil] Policy for upload/finalize
+      # @!attribute [r] user_override_start_retry_policy
+      #   @return [Gapic::Common::RetryPolicy, nil] Optional user override for start command
+      # @!attribute [r] on_progress
+      #   @return [Proc, nil] Callback invoked as `->(bytes_uploaded, total_bytes)`
+      #
       CompleteUploadConfig = Data.define(
         :initial_url,
         :initial_body,
@@ -28,7 +55,7 @@ module Gapic
         :upload_size,
         :chunk_size,
         :content_type,
-        :deadline,
+        :timeout,
         :start_retry_policy,
         :control_plane_retry_policy,
         :data_plane_retry_policy,
@@ -42,7 +69,7 @@ module Gapic
                        upload_size: nil,
                        chunk_size: nil,
                        content_type: nil,
-                       deadline: nil,
+                       timeout: nil,
                        start_retry_policy: nil,
                        control_plane_retry_policy: nil,
                        data_plane_retry_policy: nil,
@@ -56,7 +83,7 @@ module Gapic
             upload_size:                      upload_size,
             chunk_size:                       chunk_size,
             content_type:                     content_type,
-            deadline:                         deadline,
+            timeout:                          timeout,
             start_retry_policy:               start_retry_policy,
             control_plane_retry_policy:       control_plane_retry_policy,
             data_plane_retry_policy:          data_plane_retry_policy,
