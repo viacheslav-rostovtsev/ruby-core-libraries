@@ -96,11 +96,16 @@ module Gapic
             fail_with_deadline_exceeded(state)
           in [_, :user_cancel]
             cancel_session(state)
-          in [_, :response_rejected]
+          in [:starting | :transmission_sending | :finalizing_sending_upload |
+              :finalizing_sending_finalize | :recovery | :cancelling, :response_rejected]
             fail_with_rejected(state, event)
-          in [_, :response_cat2 | :response_fatal_bad_response]
+          in [:starting | :cancelling, :response_cat2] |
+             [:starting | :transmission_sending | :finalizing_sending_upload |
+              :finalizing_sending_finalize | :recovery | :cancelling, :response_fatal_bad_response]
             fail_with_bad_response(state, event)
-          in [_, :request_retries_exhausted | :request_connection_failed | :request_timeout | :request_failed_unknown]
+          in [:starting | :transmission_sending | :finalizing_sending_upload |
+              :finalizing_sending_finalize | :recovery | :cancelling,
+              :request_retries_exhausted | :request_connection_failed | :request_timeout | :request_failed_unknown]
             fail_with_request_error(state, event)
           else
             fail_with_unmatched_transition(state, event)

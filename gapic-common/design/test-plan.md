@@ -10,7 +10,9 @@ This document outlines the complete unit and integration test plan for the Resum
 flowchart TD
     subgraph TestSuites["Test Suites"]
         RC["rules_classification_test.rb<br/>(Rules Classification & Utility)"]
-        RT["rules_test.rb<br/>(Rules State Machine & Error Formatting)"]
+        RT["rules_test.rb<br/>(Rules Progression & Lifecycle)"]
+        RR["rules_recovery_test.rb<br/>(Rules Recovery Transitions)"]
+        RE["rules_error_test.rb<br/>(Rules Terminal Errors & Formatting)"]
         RP["retry_policies_test.rb<br/>(Retry Policies & Header Extraction)"]
         DB["driver_buffer_test.rb<br/>(Stream Buffering & Realignment)"]
         DE["driver_error_mapping_test.rb<br/>(Network Error Mapping)"]
@@ -34,6 +36,8 @@ flowchart TD
 
     RC --> RulesClassify
     RT --> RulesStep
+    RR --> RulesStep
+    RE --> RulesStep
     RP --> Policies
     DB --> DriverIO
     DE --> DriverErr
@@ -49,16 +53,16 @@ flowchart TD
 
 | Double Name | Location | Description & Behavior |
 | :--- | :--- | :--- |
-| `ChunkedStream` | [driver_buffer_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/driver_buffer_test.rb#L29) | Wraps `StringIO`; caps returned bytes per `#read(length)` call to simulate socket/pipe short reads. |
-| `UnseekableStream` | [driver_buffer_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/driver_buffer_test.rb#L53) | Wraps `StringIO` with `#read` but explicitly omits `#seek` (`respond_to?(:seek)` is `false`). |
-| `FailingClientStub` | [driver_error_mapping_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/driver_error_mapping_test.rb#L30) | Integration fake client stub configured with `@error_to_raise` to verify exception rescue in `Driver#make_post_request`. |
-| `ScriptedClientStub` | [driver_progress_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/driver_progress_test.rb#L30) / [driver_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/driver_test.rb#L30) | Yields a deterministic sequence of HTTP response structs and records dispatched requests. |
+| `ChunkedStream` | `driver_buffer_test.rb` | Wraps `StringIO`; caps returned bytes per `#read(length)` call to simulate socket/pipe short reads. |
+| `UnseekableStream` | `driver_buffer_test.rb` | Wraps `StringIO` with `#read` but explicitly omits `#seek` (`respond_to?(:seek)` is `false`). |
+| `FailingClientStub` | `driver_error_mapping_test.rb` | Integration fake client stub configured with `@error_to_raise` to verify exception rescue in `Driver#make_post_request`. |
+| `ScriptedClientStub` | `driver_progress_test.rb` / `driver_test.rb` | Yields a deterministic sequence of HTTP response structs and records dispatched requests. |
 
 ---
 
 ## 3. Detailed Test Suites & Cases
 
-### 3.1 Rules Classification & Utility ([rules_classification_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/rules_classification_test.rb))
+### 3.1 Rules Classification & Utility (`rules_classification_test.rb`)
 
 #### A. Case-Insensitive Header Extraction (`Rules.header_value`)
 * **Exact match**: Exact key casing (`"X-Goog-Upload-Status"` $\rightarrow$ `"active"`).
@@ -102,12 +106,28 @@ flowchart TD
 
 ---
 
-### 3.2 State Machine Actionable Errors ([rules_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/rules_test.rb))
+### 3.2 Rules State Machine (`rules_test.rb`, `rules_recovery_test.rb`, `rules_error_test.rb`)
 
+#### A. Normal Progression & Session Lifecycle (`rules_test.rb`)
+* **Session initiation**: `:initializing` on `:start_upload` transitions to `:starting` and emits `Instruction::SendStart`.
+* **Transmission start**: `:starting` on `:response_active` resolves chunk size and granularity, transitions to `:transmission_reading`, and emits `Instruction::FillBuffer`.
+* **Chunk transmission & finalization**: `:transmission_reading` dispatches `SendChunk` (with or without `finalize: true`) or standalone `SendFinalize` depending on stream EOF and buffered bytes.
+* **Chunk acknowledgment**: `:transmission_sending` on `:response_active` advances offset, emits `NotifyProgress`, `RealignBuffer`, and `FillBuffer`.
+* **Cancellation flow**: `:user_cancel` transitions to `:cancelling` and emits `SendCancel`; `:response_cancelled` transitions to `:cancelled`.
+
+#### B. Protocol Recovery Transitions (`rules_recovery_test.rb`)
+* **Entering recovery**: `:transmission_sending` (on `:response_cat2`, `:request_connection_failed`, `:request_timeout`) and `:finalizing_sending_upload` (on `:request_timeout`) transition to `:recovery` and emit `Instruction::SendQuery`.
+* **Realignment from recovery**: `:recovery` on `:response_active` updates offset from `X-Goog-Upload-Size-Received`, emits `RealignBuffer` and `FillBuffer`, and transitions to `:transmission_reading`.
+* **Finalized in recovery**: `:recovery` on `:response_final` transitions to `:success` and emits `TerminateSuccess`.
+* **Retrying recovery query**: `:recovery` on `:response_cat2` remains in `:recovery` and re-emits `SendQuery`.
+
+#### C. Terminal Failures & Actionable Error Formatting (`rules_error_test.rb`)
+* **Terminal failures (`:rejected` / `:error`)**:
+  * Session rejection (`:response_rejected` $\rightarrow$ `UploadRejectedError`), fatal bad responses (`:response_fatal_bad_response` $\rightarrow$ `BadResponseError`).
+  * Non-recoverable request failures: `:request_retries_exhausted` in `:transmission_sending`, and `:request_timeout` in `:starting` or `:recovery`.
+  * Global deadline expiration: `:global_deadline_exceeded` $\rightarrow$ `DeadlineExceededError`.
 * **Actionable description on unexpected HTTP response**:
-  * Unmatched event (HTTP 200 `Status: final` while in `:transmission_sending`) raises `InvalidTransitionError`.
-  * Verifies human phrasing: `"Resumable upload failed while sending a chunk of data: received an unexpected HTTP 200 response (X-Goog-Upload-Status: 'final')."`
-  * Verifies error properties: `err.response`, `err.event`, `err.state`.
+  * Unmatched event (HTTP 200 `Status: final` while in `:transmission_sending`) raises `InvalidTransitionError` with human phrasing (`"Resumable upload failed while sending a chunk of data: received an unexpected HTTP 200 response (X-Goog-Upload-Status: 'final')."`) and attaches `err.response`, `err.event`, `err.state`.
 * **Missing status header formatting in error**:
   * Unexpected response lacking `X-Goog-Upload-Status` formats header description as `(X-Goog-Upload-Status: missing)`.
 * **Actionable description for non-HTTP unexpected events**:
@@ -115,7 +135,7 @@ flowchart TD
 
 ---
 
-### 3.3 Driver Stream Buffering & Realignment ([driver_buffer_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/driver_buffer_test.rb))
+### 3.3 Driver Stream Buffering & Realignment (`driver_buffer_test.rb`)
 
 #### A. Stream Reading (`Driver#execute_fill_buffer`)
 * **Short reads**: `ChunkedStream` returning at most 20 bytes per read call repeatedly accumulates until buffer hits target 100 bytes (`bytes_buffered: 100, eof: false`).
@@ -137,23 +157,23 @@ flowchart TD
 
 ---
 
-### 3.4 Driver Network Error Mapping ([driver_error_mapping_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/driver_error_mapping_test.rb))
+### 3.4 Driver Network Error Mapping (`driver_error_mapping_test.rb`)
 
 * **`Driver#rescue_request_error`**:
-  * `Gapic::Rest::DeadlineExceededError` $\rightarrow$ `Event::RequestFailed(kind: :retries_exhausted)` preserving error message and `source_error`.
+  * `Gapic::Rest::DeadlineExceededError` $\rightarrow$ `Event::RequestFailed(kind: :timeout)` preserving error message and `source_error`.
   * `Gapic::Rest::Error` with HTTP status code $\rightarrow$ `Event::HttpResponse(status:, headers:, body:)`.
   * `Gapic::Rest::Error` without status code $\rightarrow$ `Event::RequestFailed(kind: :connection_failed)`.
   * `StandardError` (`RuntimeError`) $\rightarrow$ `Event::RequestFailed(kind: :connection_failed)`.
 * **`Driver#rescue_faraday_error`**:
   * `Faraday::Error` with response hash $\rightarrow$ `Event::HttpResponse(status: 400, headers:, body:)`.
-  * `Faraday::TimeoutError` $\rightarrow$ `Event::RequestFailed(kind: :connection_failed)`.
+  * `Faraday::TimeoutError` $\rightarrow$ `Event::RequestFailed(kind: :timeout)`.
   * `Faraday::ConnectionFailed` $\rightarrow$ `Event::RequestFailed(kind: :connection_failed)`.
   * Generic `Faraday::Error` without response $\rightarrow$ `Event::RequestFailed(kind: :retries_exhausted)`.
 * **Integration verification**: All mappings verified both directly and end-to-end through `Driver#make_post_request` via `FailingClientStub`.
 
 ---
 
-### 3.5 Retry Policies & Header Extraction ([retry_policies_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/retry_policies_test.rb))
+### 3.5 Retry Policies & Header Extraction (`retry_policies_test.rb`)
 
 #### A. Header Extraction (`RetryPolicies.extract_headers`)
 * Extracts from `#headers`, `#response_headers`, and Faraday `#response[:headers]`. Returns `nil` when no headers present.
@@ -167,7 +187,7 @@ flowchart TD
 
 ---
 
-### 3.6 Progress Notification Dispatching ([driver_progress_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/driver_progress_test.rb))
+### 3.6 Progress Notification Dispatching (`driver_progress_test.rb`)
 
 * **Safe no-op without callback**: `on_progress: nil` executes without raising.
 * **Happy path**: Callback receives `(bytes_uploaded, total_bytes)` once per instruction.
@@ -176,14 +196,14 @@ flowchart TD
 
 ---
 
-### 3.7 Driver Upload Execution Loop ([driver_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/driver_test.rb))
+### 3.7 Driver Upload Execution Loop (`driver_test.rb`)
 
 * **Multi-chunk upload**: Multi-chunk stream uploads with active status headers succeed and return the final response body String.
 * **Protocol recovery during chunk upload**: Missing status header on chunk response triggers `query` recovery and resumes chunk transmission from the server-confirmed offset.
 
 ---
 
-### 3.8 Driver Initiation & Query Retries ([driver_retry_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/driver_retry_test.rb))
+### 3.8 Driver Initiation & Query Retries (`driver_retry_test.rb`)
 
 * **Session initiation retry loop**: Missing status header on HTTP 200 during `start` triggers `start_retry_policy` and succeeds upon header arrival.
 * **Initiation retry exhaustion**: Continuous missing status headers on `start` exhaust retries and dispatch `Event::RequestFailed(kind: :retries_exhausted)`.
@@ -191,7 +211,7 @@ flowchart TD
 
 ---
 
-### 3.9 Driver Configuration & Deadlines ([driver_config_test.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/test/gapic/rest/resumable_upload/driver_config_test.rb))
+### 3.9 Driver Configuration & Deadlines (`driver_config_test.rb`)
 
 * **Explicit positive timeout precedence**: `resolve_timeout` returns `config.timeout` when strictly positive.
 * **Zero or negative timeout handling**: Zero or negative `config.timeout` is treated the same as `nil` (unset), falling back to size-based or `BASE_TIMEOUT` resolution.
