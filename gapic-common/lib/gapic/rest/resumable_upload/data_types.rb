@@ -42,8 +42,6 @@ module Gapic
       #   @return [Gapic::Common::RetryPolicy, nil] Policy for query/cancel commands
       # @!attribute [r] data_plane_retry_policy
       #   @return [Gapic::Common::RetryPolicy, nil] Policy for upload/finalize
-      # @!attribute [r] user_override_start_retry_policy
-      #   @return [Gapic::Common::RetryPolicy, nil] Optional user override for start command
       # @!attribute [r] on_progress
       #   @return [Proc, nil] Callback invoked as `->(bytes_uploaded, total_bytes)`
       #
@@ -59,7 +57,6 @@ module Gapic
         :start_retry_policy,
         :control_plane_retry_policy,
         :data_plane_retry_policy,
-        :user_override_start_retry_policy,
         :on_progress
       ) do
         def initialize initial_url:,
@@ -73,22 +70,20 @@ module Gapic
                        start_retry_policy: nil,
                        control_plane_retry_policy: nil,
                        data_plane_retry_policy: nil,
-                       user_override_start_retry_policy: nil,
                        on_progress: nil
           super(
-            initial_url:                      initial_url,
-            initial_body:                     initial_body,
-            initial_headers:                  initial_headers || {},
-            stream:                           stream,
-            upload_size:                      upload_size,
-            chunk_size:                       chunk_size,
-            content_type:                     content_type,
-            timeout:                          timeout,
-            start_retry_policy:               start_retry_policy,
-            control_plane_retry_policy:       control_plane_retry_policy,
-            data_plane_retry_policy:          data_plane_retry_policy,
-            user_override_start_retry_policy: user_override_start_retry_policy,
-            on_progress:                      on_progress
+            initial_url:                initial_url,
+            initial_body:               initial_body,
+            initial_headers:            initial_headers || {},
+            stream:                     stream,
+            upload_size:                upload_size,
+            chunk_size:                 chunk_size,
+            content_type:               content_type,
+            timeout:                    timeout,
+            start_retry_policy:         start_retry_policy,
+            control_plane_retry_policy: control_plane_retry_policy,
+            data_plane_retry_policy:    data_plane_retry_policy,
+            on_progress:                on_progress
           )
         end
       end

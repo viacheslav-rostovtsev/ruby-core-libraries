@@ -553,10 +553,10 @@ module Gapic
           # Reads from stream until @buffer.bytesize reaches instruction.target_bytesize or stream hits EOF
         end
 
-        # Network operation: wraps start HTTP request in user_override_start_retry_policy or start_retry_policy
+        # Network operation: wraps start HTTP request in start_retry_policy
         # @return [Event::HttpResponse, Event::RequestFailed]
         def execute_send_start(instruction)
-          policy = @config.user_override_start_retry_policy || @start_retry_policy
+          policy = @start_retry_policy
           # Executes POST initiation request via @client_stub with policy in a retry loop.
           # Retries missing X-Goog-Upload-Status header across any response code, including 200 OK.
           # Returns Event::HttpResponse for any completed HTTP response (including 4xx/5xx).

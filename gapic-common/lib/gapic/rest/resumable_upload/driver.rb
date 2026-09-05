@@ -226,7 +226,7 @@ module Gapic
         end
 
         def execute_send_start instruction
-          policy = (@config.user_override_start_retry_policy || @start_retry_policy).dup.start!
+          policy = @start_retry_policy.dup.start!
           headers = start_headers instruction
 
           loop do

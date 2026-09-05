@@ -42,7 +42,6 @@ class DataTypesTest < Minitest::Test
     assert_nil config.start_retry_policy
     assert_nil config.control_plane_retry_policy
     assert_nil config.data_plane_retry_policy
-    assert_nil config.user_override_start_retry_policy
     assert_nil config.on_progress
   end
 

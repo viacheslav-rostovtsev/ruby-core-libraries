@@ -52,7 +52,6 @@ module Gapic
         :start_retry_policy,               # [Gapic::Common::RetryPolicy, nil] Default policy for start command
         :control_plane_retry_policy,       # [Gapic::Common::RetryPolicy, nil] Policy for query/cancel commands
         :data_plane_retry_policy,          # [Gapic::Common::RetryPolicy, nil] Policy for upload/finalize
-        :user_override_start_retry_policy, # [Gapic::Common::RetryPolicy, nil] Optional user override for start command
         :on_progress                       # [Proc, nil] Callback: ->(bytes_uploaded, total_bytes)
       )
     end
@@ -188,7 +187,6 @@ Full implementation: [reference-implementation.md#3-driver-class](reference-impl
 3.  **Request Modification on 4xx**: Retrying Category 2 errors requires querying the backend for `server_offset` first.
 4.  **Standard Retry Configuration & Distinct Policies**: The Driver manages distinct retry policy configurations for Category 1 transient errors:
     *   **Start Policy (`start_retry_policy`)**: Applies specifically to session initiation (`start`). Configured with standard retry codes (`["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"]`) and network errors (`[Faraday::ConnectionFailed, Faraday::TimeoutError, SocketError]`). A missing or empty `X-Goog-Upload-Status` header is treated as **retriable** (predicate returns `true`) across **any response code, including 200 OK**.
-    *   **User Override for Start (`user_override_start_retry_policy`)**: If supplied by caller in `CompleteUploadConfig`, this policy overrides `start_retry_policy` exclusively for the `start` command.
     *   **Control Plane Policy (`control_plane_retry_policy`)**: Applies to session control requests (`query`, `cancel`). Configured with standard retry codes and network errors. It does **not** retry on a missing `X-Goog-Upload-Status` header, allowing `Core` to evaluate responses immediately.
     *   **Data Plane Policy (`data_plane_retry_policy`)**: Applies to data transmission requests (`upload`, `upload,finalize`, and standalone `finalize`). Shares the standard retry codes and network errors, but treats a missing `X-Goog-Upload-Status` header as **unretriable** (predicate returns `false`). This prevents blind chunk re-transmission and returns `Event::HttpResponse` immediately to `Core` so it can initiate Category 2 `Recovery`.
 
