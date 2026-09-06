@@ -67,7 +67,8 @@ module Gapic
           setup_logging logger: logger || (client_stub.respond_to?(:logger) ? client_stub.logger : nil),
                         system_name: "gapic-common",
                         service: "ResumableUpload",
-                        endpoint: endpoint
+                        endpoint: endpoint,
+                        client_id: client_stub.object_id
           @upload_log = UploadLog.new stub_logger, upload_id: "unstarted"
 
           @start_retry_policy = config.start_retry_policy ||
