@@ -128,3 +128,19 @@ def spoof_logging_env enabled: nil, cloud_run: false
 ensure
   ENV["GOOGLE_SDK_RUBY_LOGGING_GEMS"] = old_enabled
 end
+
+class RecordingLogger < Logger
+  Entry = Data.define :severity, :message
+
+  attr_reader :entries
+
+  def initialize
+    super nil
+    @entries = []
+  end
+
+  def add severity, message = nil, progname = nil
+    msg = block_given? ? yield : (message || progname)
+    @entries << Entry.new(severity: severity, message: msg)
+  end
+end

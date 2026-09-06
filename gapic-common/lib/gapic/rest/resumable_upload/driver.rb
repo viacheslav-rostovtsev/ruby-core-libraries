@@ -23,6 +23,7 @@ require "gapic/rest/resumable_upload/errors"
 require "gapic/rest/resumable_upload/events"
 require "gapic/rest/resumable_upload/instructions"
 require "gapic/rest/resumable_upload/retry_policies"
+require "gapic/rest/resumable_upload/driver/upload_log"
 
 module Gapic
   module Rest
@@ -48,19 +49,27 @@ module Gapic
         # @return [String, nil] Current upload session ID
         attr_reader :upload_id
 
-        # @param client_stub [Gapic::Rest::ClientStub]
-        # @param config [CompleteUploadConfig]
-        # @param logger [Logger, nil] Optional logger
-        def initialize client_stub:, config:, logger: nil
+        ##
+        # Initializes a new Resumable Upload Driver.
+        #
+        # @param client_stub [Gapic::Rest::ClientStub] Underlying REST client stub
+        # @param config [CompleteUploadConfig] Configuration for this upload session
+        # @param core [Core, nil] Optional Core state machine (defaults to new Core with config)
+        # @param logger [Logger, nil] Optional logger override
+        def initialize client_stub:, config:, core: nil, logger: nil
           @client_stub = client_stub
           @config = config
-          setup_logging logger: logger || (client_stub.respond_to?(:logger) ? client_stub.logger : nil),
-                        service: "ResumableUpload",
-                        endpoint: client_stub.respond_to?(:endpoint) ? client_stub.endpoint : nil,
-                        client_id: client_stub.object_id
-          @core = Core.new config
+          @core = core || Core.new(config)
           @buffer = "".b
           @buffer_start_offset = 0
+
+          endpoint = client_stub.respond_to?(:endpoint) ? client_stub.endpoint : nil
+          setup_logging logger: logger || (client_stub.respond_to?(:logger) ? client_stub.logger : nil),
+                        system_name: "gapic-common",
+                        service: "ResumableUpload",
+                        endpoint: endpoint
+          @upload_log = UploadLog.new stub_logger, upload_id: "unstarted"
+
           @start_retry_policy = config.start_retry_policy ||
                                 self.class.default_start_retry_policy
           @control_plane_retry_policy = config.control_plane_retry_policy ||
@@ -100,20 +109,16 @@ module Gapic
         #
         # @return [String, Object] Final response body
         def run
-          @upload_id = LoggingConcerns.random_uuid4
+          @upload_log = UploadLog.new stub_logger, upload_id: LoggingConcerns.random_uuid4
           @deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + resolve_timeout
           pending_event = Event::StartUpload.new
 
           loop do
-            instructions = @core.dispatch pending_event
-            log_decision @core.last_decision
-            log_lifecycle @core.last_decision
+            instructions = dispatch_event pending_event
             pending_event = nil
 
             if deadline_exceeded? && !terminal_instructions?(instructions)
-              instructions = @core.dispatch Event::GlobalDeadlineExceeded.new
-              log_decision @core.last_decision
-              log_lifecycle @core.last_decision
+              instructions = dispatch_event Event::GlobalDeadlineExceeded.new
             end
 
             instructions.each do |instruction|
@@ -125,6 +130,18 @@ module Gapic
         end
 
         private
+
+        def dispatch_event event
+          instructions = begin
+            @core.dispatch event
+          rescue InvalidTransitionError => e
+            @upload_log.unmatched_transition @core.state, event, e
+            raise
+          end
+          @upload_log.decision @core.last_decision
+          @upload_log.lifecycle @core.last_decision, @config
+          instructions
+        end
 
         def pending_event_type? obj
           obj.is_a?(Event::ChunkRead) || obj.is_a?(Event::HttpResponse) ||
@@ -186,16 +203,10 @@ module Gapic
                            "fast_forward"
                          end
 
-          stub_logger.debug do |entry|
-            entry.set_system_name
-            entry.set_service
-            entry.set "uploadId", @upload_id
-            entry.set "realignCase", realign_case
-            entry.set "offset", server_offset
-            entry.set "bufferStart", buffer_start
-            entry.set "bufferEnd", buffer_end
-            entry.message = "Realigning buffer (#{realign_case}) to offset #{server_offset}"
-          end
+          unseekable = realign_case == "rewind" && !@config.stream.respond_to?(:seek)
+          @upload_log.buffer_realign realign_case, server_offset: server_offset,
+                                                   current_offset: buffer_start,
+                                                   unseekable: unseekable
 
           if server_offset >= buffer_start && server_offset <= buffer_end
             realign_within_buffer server_offset
@@ -214,15 +225,6 @@ module Gapic
 
         def realign_rewind_stream server_offset
           unless @config.stream.respond_to? :seek
-            stub_logger.warn do |entry|
-              entry.set_system_name
-              entry.set_service
-              entry.set "uploadId", @upload_id
-              entry.set "offset", server_offset
-              entry.set "bufferStart", @buffer_start_offset
-              entry.message = "Cannot rewind unseekable stream to offset #{server_offset} " \
-                              "(buffered from #{@buffer_start_offset})"
-            end
             raise UnseekableStreamError,
                   "Cannot rewind unseekable stream to offset #{server_offset} (buffered from #{@buffer_start_offset})"
           end
@@ -275,7 +277,7 @@ module Gapic
 
             event = make_post_request instruction.url, headers: headers, body: instruction.body,
                                       retry_policy: policy, method_name: "ResumableUpload.start",
-                                      retry_attempt: attempt
+                                      start_attempt: attempt
             return event unless event.is_a? Event::HttpResponse
 
             status_hdr = Rules.header_value event.headers, "x-goog-upload-status"
@@ -286,7 +288,7 @@ module Gapic
             can_retry = policy.send(:retry_with_deadline?) && policy.call(event)
             unless can_retry
               failed_event = Event::RequestFailed.new kind: :retries_exhausted, message: err.message, source_error: err
-              log_wire_failure failed_event, attempt
+              @upload_log.wire_failure failed_event
               return failed_event
             end
             attempt += 1
@@ -340,240 +342,24 @@ module Gapic
                             method_name: "ResumableUpload.cancel"
         end
 
-        def make_post_request url, headers:, body:, retry_policy:, method_name: nil, retry_attempt: 1
+        def make_post_request url, headers:, body:, retry_policy:, method_name: nil, start_attempt: 1
           options = { metadata: headers, retry_policy: retry_policy }
-          log_wire_send url, headers: headers, body: body, retry_attempt: retry_attempt
+          @upload_log.wire_send method: "POST", url: url, headers: headers,
+                                start_attempt: start_attempt, body_size: body.to_s.bytesize, body: body
 
           response = @client_stub.make_post_request uri: url, body: body, params: {},
                                                     options: options, method_name: method_name
           event = Event::HttpResponse.new status: response.status, headers: response.headers || {}, body: response.body
-          log_wire_receive event, retry_attempt
+          @upload_log.wire_receive event
           event
         rescue StandardError => e
           event = rescue_request_error e
           if event.is_a? Event::HttpResponse
-            log_wire_receive event, retry_attempt
+            @upload_log.wire_receive event
           else
-            log_wire_failure event, retry_attempt
+            @upload_log.wire_failure event
           end
           event
-        end
-
-        def log_wire_send url, headers:, body:, retry_attempt:
-          command = Rules.header_value headers, "x-goog-upload-command"
-          offset = Rules.header_value headers, "x-goog-upload-offset"
-          stub_logger.debug do |entry|
-            entry.set_system_name
-            entry.set_service
-            entry.set "uploadId", @upload_id
-            entry.set "command", command
-            entry.set "url", abridge_url(url)
-            entry.set "offset", offset.to_i if offset
-            entry.set "length", body.to_s.bytesize
-            entry.set "body", abridge_bytes(body)
-            entry.set "headers", abridge_headers(headers)
-            entry.set "retryAttempt", retry_attempt
-            entry.message = "Sending #{command}"
-          end
-        end
-
-        # rubocop:disable Metrics/AbcSize
-        def log_wire_receive event, retry_attempt
-          stub_logger.debug do |entry|
-            entry.set_system_name
-            entry.set_service
-            entry.set "uploadId", @upload_id
-            entry.set "httpStatus", event.status
-            upload_status = Rules.header_value event.headers, "x-goog-upload-status"
-            entry.set "uploadStatus", upload_status if upload_status
-            size_recv = Rules.header_value event.headers, "x-goog-upload-size-received"
-            entry.set "sizeReceived", size_recv.to_i if size_recv
-            gran = Rules.header_value event.headers, "x-goog-upload-chunk-granularity"
-            entry.set "granularity", gran.to_i if gran
-            entry.set "headers", abridge_headers(event.headers)
-            entry.set "body", event.status >= 400 ? abridge_error_body(event.body) : abridge_bytes(event.body)
-            entry.set "retryAttempt", retry_attempt
-            entry.message = "Received #{event.status}"
-          end
-        end
-        # rubocop:enable Metrics/AbcSize
-
-        def log_wire_failure event, retry_attempt
-          stub_logger.debug do |entry|
-            entry.set_system_name
-            entry.set_service
-            entry.set "uploadId", @upload_id
-            entry.set "kind", event.kind
-            entry.set "message", event.message
-            entry.set "retryAttempt", retry_attempt
-            entry.message = "Request Failed"
-          end
-        end
-
-        # rubocop:disable Metrics/AbcSize
-        def log_decision decision
-          return unless decision
-
-          stub_logger.debug do |entry|
-            entry.set_system_name
-            entry.set_service
-            entry.set "uploadId", @upload_id
-            entry.set "fromStatus", decision.from_status
-            entry.set "shape", decision.shape
-            entry.set "recipe", decision.recipe
-            entry.set "toStatus", decision.next_state.status
-            entry.set "offset", decision.next_state.offset
-            entry.set "inFlightLength", decision.next_state.in_flight_length
-            entry.set("instructions", decision.instructions.map { |i| summarize_instruction i })
-            entry.message = "Rules: #{decision.from_status} + #{decision.shape} -> " \
-                            "#{decision.recipe} -> #{decision.next_state.status}"
-          end
-        end
-        # rubocop:enable Metrics/AbcSize
-
-        # rubocop:disable Metrics/MethodLength,Metrics/AbcSize,Metrics/BlockLength
-        def log_lifecycle decision
-          return unless decision
-
-          recipe = decision.recipe
-          if recipe == :send_chunk
-            stub_logger.debug do |entry|
-              entry.set_system_name
-              entry.set_service
-              entry.set "uploadId", @upload_id
-              entry.set "recipe", recipe
-              entry.set "offset", decision.next_state.offset
-              entry.set "length", decision.next_state.in_flight_length
-              entry.message = "Sending upload chunk"
-            end
-            return
-          end
-
-          stub_logger.info do |entry|
-            entry.set_system_name
-            entry.set_service
-            entry.set "uploadId", @upload_id
-            entry.set "recipe", recipe
-
-            case recipe
-            when :start_session
-              entry.set "uploadSize", @config.upload_size
-              entry.set "requestedChunkSize", @config.chunk_size
-              entry.message = "Initiating resumable upload"
-            when :begin_transmission
-              entry.set "effectiveChunkSize", decision.next_state.chunk_size
-              entry.set "granularity", decision.next_state.chunk_granularity
-              entry.set "uploadUrl", abridge_url(decision.next_state.upload_url)
-              entry.message = "Upload session established"
-            when :send_upload_finalize
-              entry.set "offset", decision.next_state.offset
-              entry.set "length", decision.next_state.in_flight_length
-              entry.message = "Sending final upload chunk and finalizing"
-            when :send_finalize
-              entry.set "offset", decision.next_state.offset
-              entry.message = "Finalizing upload session"
-            when :enter_recovery
-              entry.set "offset", decision.next_state.offset
-              entry.message = "Entering upload recovery"
-            when :retry_recovery
-              entry.set "offset", decision.next_state.offset
-              entry.message = "Retrying upload recovery query"
-            when :realign_from_recovery
-              entry.set "serverOffset", decision.next_state.offset
-              entry.message = "Realigning upload offset from recovery"
-            when :complete_upload_with_data, :complete_upload_finalized
-              entry.set "bytesUploaded", decision.next_state.offset
-              entry.message = "Resumable upload completed"
-            when :cancel_session
-              entry.message = "Cancelling resumable upload"
-            when :complete_cancellation
-              entry.message = "Resumable upload cancelled"
-            else
-              err_msg = decision.next_state.last_error&.to_s
-              entry.set "error", err_msg if err_msg
-              entry.message = "Resumable upload transition: #{recipe}"
-            end
-          end
-        end
-        # rubocop:enable Metrics/MethodLength,Metrics/AbcSize,Metrics/BlockLength
-
-        # rubocop:disable Metrics/MethodLength
-        def summarize_instruction instruction
-          case instruction
-          when Instruction::SendStart
-            { "type" => "SendStart", "url" => abridge_url(instruction.url) }
-          when Instruction::SendChunk
-            {
-              "type"     => "SendChunk",
-              "url"      => abridge_url(instruction.url),
-              "offset"   => instruction.offset,
-              "length"   => instruction.length,
-              "finalize" => instruction.finalize
-            }
-          when Instruction::SendFinalize
-            { "type" => "SendFinalize", "url" => abridge_url(instruction.url) }
-          when Instruction::SendQuery
-            { "type" => "SendQuery", "url" => abridge_url(instruction.url) }
-          when Instruction::SendCancel
-            { "type" => "SendCancel", "url" => abridge_url(instruction.url) }
-          when Instruction::RealignBuffer
-            { "type" => "RealignBuffer", "serverOffset" => instruction.server_offset }
-          when Instruction::FillBuffer
-            { "type" => "FillBuffer", "targetBytesize" => instruction.target_bytesize }
-          when Instruction::NotifyProgress
-            {
-              "type"          => "NotifyProgress",
-              "bytesUploaded" => instruction.progress.bytes_uploaded,
-              "totalBytes"    => instruction.progress.total_bytes
-            }
-          when Instruction::TerminateSuccess
-            { "type" => "TerminateSuccess" }
-          when Instruction::TerminateFailure
-            { "type" => "TerminateFailure", "error" => instruction.error.to_s }
-          else
-            { "type" => instruction.class.name }
-          end
-        end
-        # rubocop:enable Metrics/MethodLength
-
-        def abridge_bytes data
-          return "<empty>" if data.nil? || data.empty?
-          return data if data.bytesize <= 64
-
-          first_bytes = data.byteslice 0, 32
-          "<#{data.bytesize} bytes; first 32: #{first_bytes}>"
-        end
-
-        def abridge_error_body data
-          return "<empty>" if data.nil? || data.empty?
-
-          data.to_s[0, 512]
-        end
-
-        def abridge_url url
-          return nil if url.nil?
-
-          uri = URI.parse url.to_s
-          if uri.query && !uri.query.empty?
-            elided = uri.query.split("&").map do |pair|
-              key, _val = pair.split "=", 2
-              "#{key}=<...>"
-            end.join "&"
-            uri.query = nil
-            return "#{uri}?#{elided}"
-          end
-          uri.to_s
-        rescue URI::InvalidURIError
-          url.to_s
-        end
-
-        def abridge_headers headers
-          return {} unless headers.is_a? Hash
-
-          headers.each_with_object({}) do |(k, v), acc|
-            key_str = k.to_s
-            acc[key_str] = key_str.downcase.start_with?("x-goog-upload-") ? v : "<...>"
-          end
         end
 
         def rescue_request_error err

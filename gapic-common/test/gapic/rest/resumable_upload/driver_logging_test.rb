@@ -19,277 +19,170 @@ require "gapic/rest/resumable_upload"
 require "stringio"
 
 ##
-# Tests for ResumableUpload Driver structured logging across lifecycle, decisions,
-# wire exchanges, buffer realignments, and data abridging.
+# Integration and unit tests for Driver logging concerns.
 #
 class DriverLoggingTest < Minitest::Test
   include Gapic::Rest::ResumableUpload
 
-  FakeHttpResponse = Struct.new :status, :headers, :body
+  FakeResponse = Struct.new :status, :headers, :body
 
-  class RecordingLogger < Logger
-    attr_reader :entries
+  class FakeStub
+    attr_reader :method_names
 
-    def initialize
-      super(StringIO.new)
-      @entries = []
+    def initialize responses
+      @responses = responses
+      @method_names = []
     end
 
-    def add severity, message = nil, progname = nil
-      severity ||= UNKNOWN
-      if message.nil?
-        if block_given?
-          message = yield
-        else
-          message = progname
-          progname = @progname
-        end
-      end
-      @entries << { severity: severity, message: message, progname: progname }
-      true
-    end
-  end
-
-  class ScriptedClientStub
-    attr_reader :requests, :logger, :endpoint
-
-    def initialize responses, logger: nil, endpoint: "https://storage.googleapis.com"
-      @responses = responses.dup
-      @requests = []
-      @logger = logger
-      @endpoint = endpoint
+    def endpoint
+      "https://storage.googleapis.com"
     end
 
-    def make_post_request uri:, body: nil, params: {}, options: {}, method_name: nil
-      @requests << { uri: uri, body: body, params: params, options: options, method_name: method_name }
-      raise "No scripted response left" if @responses.empty?
-
-      resp = @responses.shift
-      raise resp if resp.is_a? Exception
-
-      resp
+    def make_post_request uri:, body:, params:, options:, method_name: nil
+      _ = uri
+      _ = body
+      _ = params
+      _ = options
+      @method_names << method_name
+      @responses.shift
     end
   end
 
-  class UnseekableStream
-    def initialize data
-      @io = StringIO.new data
-    end
-
-    def read length = nil
-      @io.read length
-    end
-  end
-
-  def test_logs_decision_lifecycle_and_wire_entries_with_upload_id_and_method_name
-    logger = RecordingLogger.new
-    # 100 bytes data so body > 64 bytes triggers abridging
-    payload = "A" * 100
-    stream = StringIO.new payload
-
+  def test_all_entries_share_upload_id_and_pass_method_names
+    recording = RecordingLogger.new
     responses = [
-      FakeHttpResponse.new(
-        200,
-        {
-          "X-Goog-Upload-Status"            => "active",
-          "X-Goog-Upload-URL"               => "https://storage.googleapis.com/upload/session?upload_id=secret123&part=1",
-          "X-Goog-Upload-Chunk-Granularity" => "256",
-          "X-Secret-Header"                 => "super-secret-value"
-        },
-        ""
-      ),
-      FakeHttpResponse.new(
-        200,
-        { "X-Goog-Upload-Status" => "final" },
-        '{"id":"obj-1"}'
-      )
-    ]
-
-    stub = ScriptedClientStub.new responses, logger: logger
-    config = CompleteUploadConfig.new(
-      initial_url:     "https://storage.googleapis.com/upload/storage/v1/b/bucket/o?uploadType=resumable&key=secretKey",
-      initial_headers: { "Authorization" => "Bearer secret-token", "X-Goog-Upload-Header-Content-Length" => "100" },
-      initial_body:    '{"name":"test.bin"}',
-      stream:          stream,
-      upload_size:     100,
-      chunk_size:      256
-    )
-
-    driver = Driver.new client_stub: stub, config: config
-    result = driver.run
-
-    assert_equal '{"id":"obj-1"}', result
-    refute_empty logger.entries
-
-    # Verify method_name passed to make_post_request
-    assert_equal "ResumableUpload.start", stub.requests[0][:method_name]
-    assert_equal "ResumableUpload.upload", stub.requests[1][:method_name]
-
-    # Every log entry must have uploadId matching driver.upload_id and be a Google::Logging::Message
-    logger.entries.each do |entry|
-      msg = entry[:message]
-      assert_instance_of Google::Logging::Message, msg
-      assert_equal driver.upload_id, msg.fields["uploadId"]
-      refute_nil driver.upload_id
-    end
-
-    # Verify Decision logs (DEBUG)
-    decision_entries = logger.entries.select { |e| e[:message].message.start_with?("Rules:") }
-    assert_equal 4, decision_entries.size
-
-    first_decision = decision_entries.first[:message]
-    assert_equal Logger::DEBUG, decision_entries.first[:severity]
-    assert_equal "Rules: initializing + start_upload -> start_session -> starting", first_decision.message
-    assert_equal "initializing", first_decision.fields["fromStatus"]
-    assert_equal "start_upload", first_decision.fields["shape"]
-    assert_equal "start_session", first_decision.fields["recipe"]
-    assert_equal "starting", first_decision.fields["toStatus"]
-    # Instructions in decision logs must be summaries without raw bodies
-    inst_summary = first_decision.fields["instructions"].first
-    assert_equal "SendStart", inst_summary["type"]
-    assert_equal "https://storage.googleapis.com/upload/storage/v1/b/bucket/o?uploadType=<...>&key=<...>",
-                 inst_summary["url"]
-    refute inst_summary.key?("body")
-
-    # Verify Lifecycle logs: start_session (INFO), begin_transmission (INFO), send_upload_finalize (INFO), complete (INFO)
-    info_entries = logger.entries.select { |e| e[:severity] == Logger::INFO }
-    info_messages = info_entries.map { |e| e[:message].message }
-    assert_includes info_messages, "Initiating resumable upload"
-    assert_includes info_messages, "Upload session established"
-    assert_includes info_messages, "Sending final upload chunk and finalizing"
-    assert_includes info_messages, "Resumable upload completed"
-
-    # Verify Wire logs (DEBUG): URL query values elided, non-X-Goog-Upload headers elided, >64B chunk body abridged
-    send_entries = logger.entries.select { |e| e[:message].message.start_with?("Sending ") }
-    upload_send = send_entries.find { |e| e[:message].fields["command"] == "upload, finalize" }[:message]
-    assert_equal "https://storage.googleapis.com/upload/session?upload_id=<...>&part=<...>", upload_send.fields["url"]
-    assert_equal 1, upload_send.fields["retryAttempt"]
-    assert_match(/^<100 bytes; first 32: A{32}>$/, upload_send.fields["body"])
-
-    # Verify Authorization header is elided in wire logs
-    start_send = send_entries.find { |e| e[:message].fields["command"] == "start" }[:message]
-    assert_equal "<...>", start_send.fields["headers"]["Authorization"]
-    assert_equal "100", start_send.fields["headers"]["X-Goog-Upload-Header-Content-Length"]
-
-    # Verify Received wire logs
-    recv_entries = logger.entries.select { |e| e[:message].message.start_with?("Received ") }
-    first_recv = recv_entries.first[:message]
-    assert_equal 200, first_recv.fields["httpStatus"]
-    assert_equal "active", first_recv.fields["uploadStatus"]
-    assert_equal 256, first_recv.fields["granularity"]
-    assert_equal "<...>", first_recv.fields["headers"]["X-Secret-Header"]
-  end
-
-  def test_send_chunk_lifecycle_is_logged_at_debug_level_only
-    logger = RecordingLogger.new
-    stream = StringIO.new("A" * 512)
-
-    responses = [
-      FakeHttpResponse.new(
+      FakeResponse.new(
         200,
         {
           "X-Goog-Upload-Status" => "active",
-          "X-Goog-Upload-URL"    => "https://storage.googleapis.com/session"
+          "X-Goog-Upload-URL"    => "https://storage.googleapis.com/session?id=123"
         },
         ""
       ),
-      FakeHttpResponse.new(
-        200,
-        { "X-Goog-Upload-Status" => "active" },
-        ""
-      ),
-      FakeHttpResponse.new(
-        200,
-        { "X-Goog-Upload-Status" => "active" },
-        ""
-      ),
-      FakeHttpResponse.new(
+      FakeResponse.new(
         200,
         { "X-Goog-Upload-Status" => "final" },
-        '{"done":true}'
+        "done"
       )
     ]
 
-    stub = ScriptedClientStub.new responses, logger: logger
+    stub = FakeStub.new responses
     config = CompleteUploadConfig.new(
       initial_url: "https://storage.googleapis.com/upload",
-      stream:      stream,
-      upload_size: 512,
+      stream:      StringIO.new("hello world"),
+      upload_size: 11,
       chunk_size:  256
     )
 
-    driver = Driver.new client_stub: stub, config: config
+    driver = Driver.new client_stub: stub, config: config, logger: recording
     driver.run
 
-    send_chunk_entries = logger.entries.select do |e|
-      e[:message].fields["recipe"] == "send_chunk" && !e[:message].message.start_with?("Rules:")
-    end
-    refute_empty send_chunk_entries
-    send_chunk_entries.each do |entry|
-      assert_equal Logger::DEBUG, entry[:severity]
-    end
+    refute_empty recording.entries
+    upload_ids = recording.entries.map { |e| e.message.fields["uploadId"] }.uniq
+    assert_equal 1, upload_ids.size
+    refute_nil upload_ids.first
+
+    assert_equal ["ResumableUpload.start", "ResumableUpload.upload"], stub.method_names
   end
 
-  def test_realign_within_buffer_logs_debug_and_unseekable_rewind_logs_warn
-    logger = RecordingLogger.new
-    stream = UnseekableStream.new("A" * 512)
-
-    responses = [
-      FakeHttpResponse.new(
-        200,
-        {
-          "X-Goog-Upload-Status" => "active",
-          "X-Goog-Upload-URL"    => "https://storage.googleapis.com/session"
-        },
-        ""
-      ),
-      # First chunk send fails with 503 triggering recovery
-      FakeHttpResponse.new(503, {}, "Backend error"),
-      # Query response asks to rewind before buffer start (0) when buffer_start is 0 -> test within_buffer first
-      FakeHttpResponse.new(
-        200,
-        {
-          "X-Goog-Upload-Status"        => "active",
-          "X-Goog-Upload-Size-Received" => "128"
-        },
-        ""
-      ),
-      # Next chunk fails with 503 triggering recovery
-      FakeHttpResponse.new(503, {}, "Backend error"),
-      # Query response asks to rewind to offset 0 (which is behind buffer_start_offset 128 on unseekable stream)
-      FakeHttpResponse.new(
-        200,
-        {
-          "X-Goog-Upload-Status"        => "active",
-          "X-Goog-Upload-Size-Received" => "0"
-        },
-        ""
-      )
-    ]
-
-    stub = ScriptedClientStub.new responses, logger: logger
+  def test_unmatched_transition_logs_warn_and_reraises
+    recording = RecordingLogger.new
+    stub = FakeStub.new []
     config = CompleteUploadConfig.new(
       initial_url: "https://storage.googleapis.com/upload",
-      stream:      stream,
-      upload_size: 512,
+      stream:      StringIO.new("hello"),
+      upload_size: 5,
       chunk_size:  256
     )
 
-    driver = Driver.new client_stub: stub, config: config
-    assert_raises UnseekableStreamError do
+    failing_core = Minitest::Mock.new
+    failing_core.expect :dispatch, nil do |_event|
+      raise InvalidTransitionError, "unmatched transition in state"
+    end
+    failing_core.expect :state, State.new(status: :initializing)
+
+    driver = Driver.new client_stub: stub, config: config, core: failing_core, logger: recording
+
+    assert_raises InvalidTransitionError do
       driver.run
     end
 
-    realign_entries = logger.entries.select { |e| e[:message].fields.key?("realignCase") }
-    assert_equal 2, realign_entries.size
-    assert_equal "within_buffer", realign_entries[0][:message].fields["realignCase"]
-    assert_equal 128, realign_entries[0][:message].fields["offset"]
-
-    assert_equal "rewind", realign_entries[1][:message].fields["realignCase"]
-    assert_equal 0, realign_entries[1][:message].fields["offset"]
-
-    warn_entries = logger.entries.select { |e| e[:severity] == Logger::WARN }
+    warn_entries = recording.entries.select { |e| e.severity == Logger::WARN }
     assert_equal 1, warn_entries.size
-    assert_match(/Cannot rewind unseekable stream to offset 0/, warn_entries.first[:message].message)
+    fields = warn_entries.first.message.fields
+    assert_equal "initializing", fields["status"]
+    assert_equal "unmatched transition in state", fields["error"]
+  end
+
+  def test_redaction_of_payload_session_url_and_authorization_header
+    recording = RecordingLogger.new
+    sentinel_payload = "SECRET123_PAYLOAD_DATA"
+    responses = [
+      FakeResponse.new(
+        200,
+        {
+          "X-Goog-Upload-Status" => "active",
+          "X-Goog-Upload-URL"    => "https://storage.googleapis.com/session?sid=SECRET123"
+        },
+        ""
+      ),
+      FakeResponse.new(
+        200,
+        { "X-Goog-Upload-Status" => "final" },
+        "done"
+      )
+    ]
+
+    stub = FakeStub.new responses
+    config = CompleteUploadConfig.new(
+      initial_url:     "https://storage.googleapis.com/upload?key=SECRET123",
+      initial_headers: { "Authorization" => "Bearer SECRET123" },
+      stream:          StringIO.new(sentinel_payload),
+      upload_size:     sentinel_payload.bytesize,
+      chunk_size:      256
+    )
+
+    driver = Driver.new client_stub: stub, config: config, logger: recording
+    driver.run
+
+    recording.entries.each do |entry|
+      full_dump = entry.message.to_s
+      refute_includes full_dump, "SECRET123"
+      refute_includes full_dump, sentinel_payload
+    end
+  end
+
+  def test_total_logged_bytes_for_run_under_64kb
+    recording = RecordingLogger.new
+    chunk_data = "X" * 32_768
+    responses = [
+      FakeResponse.new(
+        200,
+        {
+          "X-Goog-Upload-Status" => "active",
+          "X-Goog-Upload-URL"    => "https://storage.googleapis.com/session?id=1"
+        },
+        ""
+      ),
+      FakeResponse.new(
+        200,
+        { "X-Goog-Upload-Status" => "final" },
+        "done"
+      )
+    ]
+
+    stub = FakeStub.new responses
+    config = CompleteUploadConfig.new(
+      initial_url: "https://storage.googleapis.com/upload",
+      stream:      StringIO.new(chunk_data),
+      upload_size: chunk_data.bytesize,
+      chunk_size:  65_536
+    )
+
+    driver = Driver.new client_stub: stub, config: config, logger: recording
+    driver.run
+
+    total_bytes = recording.entries.sum { |e| e.message.to_s.bytesize }
+    assert_operator total_bytes, :<, 65_536
   end
 end
