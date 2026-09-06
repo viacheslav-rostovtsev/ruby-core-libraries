@@ -174,4 +174,171 @@ class RulesTest < Minitest::Test
     assert_equal 1, final_instructions.size
     assert_instance_of Instruction::TerminateFailure, final_instructions.first
   end
+
+  def test_decide_assertions_per_row
+    # Row 1: [:initializing, :start_upload] -> :start_session
+    decision = Rules.decide State.new(status: :initializing), Event::StartUpload.new, @config
+    assert_equal :initializing, decision.from_status
+    assert_equal :start_upload, decision.shape
+    assert_equal :starting, decision.next_state.status
+    assert_instance_of Instruction::SendStart, decision.instructions.first
+
+    # Row 2: [:starting, :response_active] -> :begin_transmission
+    active_resp = Event::HttpResponse.new(
+      status:  200,
+      headers: { "x-goog-upload-status" => "active", "x-goog-upload-url" => "https://example.com/session" }
+    )
+    decision = Rules.decide State.new(status: :starting), active_resp, @config
+    assert_equal :starting, decision.from_status
+    assert_equal :response_active, decision.shape
+    assert_equal :transmission_reading, decision.next_state.status
+    assert_instance_of Instruction::FillBuffer, decision.instructions.first
+
+    # Row 3: [:transmission_reading, :chunk_read_full] -> :send_chunk
+    decision = Rules.decide(
+      State.new(status: :transmission_reading, upload_url: "https://example.com/session"),
+      Event::ChunkRead.new(bytes_buffered: 512, eof: false),
+      @config
+    )
+    assert_equal :transmission_reading, decision.from_status
+    assert_equal :chunk_read_full, decision.shape
+    assert_equal :transmission_sending, decision.next_state.status
+    assert_instance_of Instruction::SendChunk, decision.instructions.first
+    refute decision.instructions.first.finalize
+
+    # Row 4: [:transmission_reading, :chunk_read_eof_with_data] -> :send_upload_finalize
+    decision = Rules.decide(
+      State.new(status: :transmission_reading, upload_url: "https://example.com/session"),
+      Event::ChunkRead.new(bytes_buffered: 256, eof: true),
+      @config
+    )
+    assert_equal :transmission_reading, decision.from_status
+    assert_equal :chunk_read_eof_with_data, decision.shape
+    assert_equal :finalizing_sending_upload, decision.next_state.status
+    assert_instance_of Instruction::SendChunk, decision.instructions.first
+    assert decision.instructions.first.finalize
+
+    # Row 5: [:transmission_reading, :chunk_read_eof_empty] -> :send_finalize
+    decision = Rules.decide(
+      State.new(status: :transmission_reading, upload_url: "https://example.com/session"),
+      Event::ChunkRead.new(bytes_buffered: 0, eof: true),
+      @config
+    )
+    assert_equal :transmission_reading, decision.from_status
+    assert_equal :chunk_read_eof_empty, decision.shape
+    assert_equal :finalizing_sending_finalize, decision.next_state.status
+    assert_instance_of Instruction::SendFinalize, decision.instructions.first
+
+    # Row 6: [:transmission_sending, :response_active] -> :ack_chunk
+    decision = Rules.decide(
+      State.new(status: :transmission_sending, upload_url: "https://example.com/session", offset: 0, in_flight_length: 512),
+      active_resp,
+      @config
+    )
+    assert_equal :transmission_sending, decision.from_status
+    assert_equal :response_active, decision.shape
+    assert_equal :transmission_reading, decision.next_state.status
+    assert_equal 3, decision.instructions.size
+
+    # Row 7: [:transmission_sending, :response_cat2] -> :enter_recovery
+    cat2_resp = Event::HttpResponse.new status: 503, headers: {}
+    decision = Rules.decide(
+      State.new(status: :transmission_sending, upload_url: "https://example.com/session"),
+      cat2_resp,
+      @config
+    )
+    assert_equal :transmission_sending, decision.from_status
+    assert_equal :response_cat2, decision.shape
+    assert_equal :recovery, decision.next_state.status
+    assert_instance_of Instruction::SendQuery, decision.instructions.first
+
+    # Row 8: [:finalizing_sending_upload, :response_final] -> :complete_upload_with_data
+    final_resp = Event::HttpResponse.new status: 200, headers: { "x-goog-upload-status" => "final" }
+    decision = Rules.decide(
+      State.new(status: :finalizing_sending_upload, offset: 512, in_flight_length: 512),
+      final_resp,
+      @config
+    )
+    assert_equal :finalizing_sending_upload, decision.from_status
+    assert_equal :response_final, decision.shape
+    assert_equal :success, decision.next_state.status
+    assert_equal 2, decision.instructions.size
+
+    # Row 9: [:finalizing_sending_finalize, :response_final] -> :complete_upload_finalized
+    decision = Rules.decide State.new(status: :finalizing_sending_finalize), final_resp, @config
+    assert_equal :finalizing_sending_finalize, decision.from_status
+    assert_equal :response_final, decision.shape
+    assert_equal :success, decision.next_state.status
+    assert_instance_of Instruction::TerminateSuccess, decision.instructions.first
+
+    # Row 10: [:recovery, :response_active] -> :realign_from_recovery
+    recovery_active_resp = Event::HttpResponse.new(
+      status:  200,
+      headers: { "x-goog-upload-status" => "active", "x-goog-upload-size-received" => "256" }
+    )
+    decision = Rules.decide State.new(status: :recovery), recovery_active_resp, @config
+    assert_equal :recovery, decision.from_status
+    assert_equal :response_active, decision.shape
+    assert_equal :transmission_reading, decision.next_state.status
+    assert_instance_of Instruction::RealignBuffer, decision.instructions.first
+
+    # Row 11: [:recovery, :response_cat2] -> :retry_recovery
+    decision = Rules.decide State.new(status: :recovery), cat2_resp, @config
+    assert_equal :recovery, decision.from_status
+    assert_equal :response_cat2, decision.shape
+    assert_equal :recovery, decision.next_state.status
+    assert_instance_of Instruction::SendQuery, decision.instructions.first
+
+    # Row 12: [:cancelling, :response_cancelled] -> :complete_cancellation
+    cancelled_resp = Event::HttpResponse.new status: 200, headers: { "x-goog-upload-status" => "cancelled" }
+    decision = Rules.decide State.new(status: :cancelling), cancelled_resp, @config
+    assert_equal :cancelling, decision.from_status
+    assert_equal :response_cancelled, decision.shape
+    assert_equal :cancelled, decision.next_state.status
+    assert_instance_of Instruction::TerminateFailure, decision.instructions.first
+
+    # Row 13: [:cancelling, :user_cancel] -> :ignore_duplicate_cancel
+    decision = Rules.decide State.new(status: :cancelling), Event::Cancel.new, @config
+    assert_equal :cancelling, decision.from_status
+    assert_equal :user_cancel, decision.shape
+    assert_equal :cancelling, decision.next_state.status
+    assert_empty decision.instructions
+
+    # Row 14: [_, :global_deadline_exceeded] -> :fail_with_deadline_exceeded
+    decision = Rules.decide State.new(status: :transmission_sending), Event::GlobalDeadlineExceeded.new, @config
+    assert_equal :transmission_sending, decision.from_status
+    assert_equal :global_deadline_exceeded, decision.shape
+    assert_equal :error, decision.next_state.status
+    assert_instance_of Gapic::Common::DeadlineExceededError, decision.next_state.last_error
+
+    # Row 15: [_, :user_cancel] -> :cancel_session
+    decision = Rules.decide State.new(status: :transmission_sending), Event::Cancel.new, @config
+    assert_equal :transmission_sending, decision.from_status
+    assert_equal :user_cancel, decision.shape
+    assert_equal :cancelling, decision.next_state.status
+    assert_instance_of Instruction::SendCancel, decision.instructions.first
+
+    # Row 16: [:starting, :response_rejected] -> :fail_with_rejected
+    rejected_resp = Event::HttpResponse.new status: 403, headers: { "x-goog-upload-status" => "final" }, body: "Rejected"
+    decision = Rules.decide State.new(status: :starting), rejected_resp, @config
+    assert_equal :starting, decision.from_status
+    assert_equal :response_rejected, decision.shape
+    assert_equal :rejected, decision.next_state.status
+    assert_instance_of Gapic::Common::UploadRejectedError, decision.next_state.last_error
+
+    # Row 17: [:starting, :response_cat2] -> :fail_with_bad_response
+    decision = Rules.decide State.new(status: :starting), cat2_resp, @config
+    assert_equal :starting, decision.from_status
+    assert_equal :response_cat2, decision.shape
+    assert_equal :error, decision.next_state.status
+    assert_instance_of Gapic::Common::BadResponseError, decision.next_state.last_error
+
+    # Row 18: [:starting, :request_retries_exhausted] -> :fail_with_request_error
+    req_failed = Event::RequestFailed.new kind: :retries_exhausted, message: "Exhausted"
+    decision = Rules.decide State.new(status: :starting), req_failed, @config
+    assert_equal :starting, decision.from_status
+    assert_equal :request_retries_exhausted, decision.shape
+    assert_equal :error, decision.next_state.status
+    assert_instance_of Instruction::TerminateFailure, decision.instructions.first
+  end
 end

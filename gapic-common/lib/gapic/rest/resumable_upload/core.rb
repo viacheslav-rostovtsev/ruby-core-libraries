@@ -28,9 +28,13 @@ module Gapic
         # @return [State] Current immutable state snapshot
         attr_reader :state
 
+        # @return [Array<Decision>] Decisions emitted during the last dispatch
+        attr_reader :last_decision
+
         # @param config [CompleteUploadConfig]
         def initialize config
           @config = config
+          @last_decision = []
           @state = State.new(
             status:            :initializing,
             upload_url:        nil,
@@ -48,9 +52,10 @@ module Gapic
         # @param event [Object] Input event
         # @return [Array<Object>] Driver instructions
         def dispatch event
-          next_state, instructions = Rules.step @state, event, @config
-          @state = next_state
-          instructions
+          decision = Rules.decide @state, event, @config
+          @state = decision.next_state
+          @last_decision = [decision]
+          decision.instructions
         end
       end
     end

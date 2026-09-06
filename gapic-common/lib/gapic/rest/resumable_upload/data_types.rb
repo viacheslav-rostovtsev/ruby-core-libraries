@@ -138,6 +138,34 @@ module Gapic
           )
         end
       end
+
+      ##
+      # Immutable decision snapshot emitted by Rules.decide.
+      #
+      # @!attribute [r] from_status
+      #   @return [Symbol] The protocol status before the transition
+      # @!attribute [r] shape
+      #   @return [Symbol] The canonical event shape
+      # @!attribute [r] next_state
+      #   @return [State] The new protocol state snapshot after transition
+      # @!attribute [r] instructions
+      #   @return [Array<Object>] Emitted instructions for the Driver
+      #
+      Decision = Data.define(
+        :from_status,
+        :shape,
+        :next_state,
+        :instructions
+      ) do
+        def initialize from_status:, shape:, next_state:, instructions: []
+          super(
+            from_status:  from_status,
+            shape:        shape,
+            next_state:   next_state,
+            instructions: instructions
+          )
+        end
+      end
     end
   end
 end

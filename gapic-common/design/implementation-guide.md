@@ -23,10 +23,10 @@ The `Driver` executes all operations with side-effects. It interacts with HTTP t
 Crucially, the Driver delegates all **Category 1 (Transient)** transport retries directly to `Gapic::Common::RetryPolicy`. Transient retries occur entirely within the Driver's network execution wrapper. The `Core` state machine is never exposed to transient noise, receiving only verified successful HTTP responses or terminal transport exceptions.
 
 ### 1.2 Core (State Container)
-The `Core` maintains the immutable `State` snapshot. When `Core#dispatch(event)` is invoked by the Driver, Core forwards `@state`, the event, and static configuration to `Rules.step`. Core mutates `@state` to the returned next state and yields instructions back to the Driver. Core contains zero protocol branching logic and zero side effects.
+The `Core` maintains the immutable `State` snapshot. When `Core#dispatch(event)` is invoked by the Driver, Core forwards `@state`, the event, and static configuration to `Rules.decide`. Core mutates `@state` to `decision.next_state`, records the decision in `@last_decision`, and returns `decision.instructions` back to the Driver. Core contains zero protocol branching logic and zero side effects.
 
 ### 1.3 Rules (Pure Decision Function)
-The `Rules` module encapsulates the Resumable Upload Protocol state transitions as a pure functional module. Given a state snapshot, an input event, and configuration, `Rules.step` computes the next protocol state and emitted driver instructions.
+The `Rules` module encapsulates the Resumable Upload Protocol state transitions as a pure functional module. Given a state snapshot, an input event, and configuration, `Rules.decide` evaluates the transition router and returns a `Decision` snapshot containing `from_status`, `shape`, `next_state`, and `instructions`.
 
 ### 1.4 Stream Buffering
 Because arbitrary Ruby `IO` objects (network sockets, pipes, `STDIN`) do not support seeking (`#seek`), the Driver buffers the current in-flight chunk in memory (bounded by chunk size, default: 8MB). When `RetryPolicy` executes transport retries, or when `Core` triggers Category 2 recovery realignments within the buffered range, the Driver retransmits directly from memory. The buffer is discarded only after receiving a `200 OK` durably confirming receipt of the chunk.
@@ -64,7 +64,7 @@ module Gapic
 end
 ```
 
-### 2.2 Protocol State (`State`)
+### 2.2 Protocol State (`State`) & Decisions (`Decision`)
 ```ruby
 module Gapic
   module Rest
@@ -81,6 +81,13 @@ module Gapic
         :last_error          # [StandardError, nil] Terminal exception
       ) do
       end
+
+      Decision = Data.define(
+        :from_status,        # [Symbol] Status before transition
+        :shape,              # [Symbol] Classified canonical event shape
+        :next_state,         # [State] Resulting protocol state snapshot
+        :instructions        # [Array<Object>] Emitted instructions for the Driver
+      )
     end
   end
 end
@@ -153,14 +160,16 @@ The complete reference implementation for `Rules`, `Core`, and `Driver` is locat
 ### 3.1 Rules Module (`Gapic::Rest::ResumableUpload::Rules`)
 The `Rules` module is a pure functional transition engine with zero state awareness and zero side effects. It provides two primary entry points:
 *   `Rules.shape_of(event)`: Classifies raw input events (`Event::StartUpload`, `Event::ChunkRead`, `Event::HttpResponse`, `Event::RequestFailed`, `Event::Cancel`, `Event::GlobalDeadlineExceeded`) into canonical symbols.
-*   `Rules.step(state, event, config)`: Evaluates `case [state.status, shape]` pattern matching to compute the next state snapshot and emitted driver instructions (`[next_state, instructions]`).
+*   `Rules.decide(state, event, config)`: Evaluates `case [state.status, shape]` pattern matching to select a transition recipe symbol, dispatches via `public_send(recipe, state, event, config)`, and returns a `Decision` snapshot (`from_status`, `shape`, `next_state`, `instructions`).
+*   `Rules.step(state, event, config)`: Convenience tuple wrapper around `Rules.decide` returning `[decision.next_state, decision.instructions]`.
 
 Full implementation: [reference-implementation.md#1-rules-module](reference-implementation.md#1-rules-module)
 
 ### 3.2 Core Class (`Gapic::Rest::ResumableUpload::Core`)
 The `Core` class is the state container holding the immutable `State` snapshot. It exposes:
 *   `#state`: Reader for the current `State` snapshot.
-*   `#dispatch(event)`: Invokes `Rules.step(@state, event, @config)`, updates `@state = next_state`, and returns the emitted instructions array to the Driver.
+*   `#last_decision`: Reader for decisions recorded during the most recent `#dispatch`.
+*   `#dispatch(event)`: Invokes `Rules.decide(@state, event, @config)`, updates `@state = decision.next_state` and `@last_decision = [decision]`, and returns `decision.instructions` to the Driver.
 
 Full implementation: [reference-implementation.md#2-core-class](reference-implementation.md#2-core-class)
 

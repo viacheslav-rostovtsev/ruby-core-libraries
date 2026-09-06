@@ -74,67 +74,88 @@ module Gapic
         end
 
         ##
+        # Top-level transition decision engine. Matches [state.status, shape].
+        #
+        # @param state [State] Current state
+        # @param event [Object] Input event
+        # @param config [CompleteUploadConfig] Static configuration
+        # @return [Decision] Decision snapshot
+        #
+        # rubocop:disable Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity,Metrics/MethodLength
+        def self.decide state, event, config
+          shape = shape_of event
+
+          recipe = case [state.status, shape]
+                   in [:initializing, :start_upload]
+                     :start_session
+                   in [:starting, :response_active]
+                     :begin_transmission
+                   in [:transmission_reading, :chunk_read_full]
+                     :send_chunk
+                   in [:transmission_reading, :chunk_read_eof_with_data]
+                     :send_upload_finalize
+                   in [:transmission_reading, :chunk_read_eof_empty]
+                     :send_finalize
+                   in [:transmission_sending, :response_active]
+                     :ack_chunk
+                   in [:transmission_sending | :finalizing_sending_upload | :finalizing_sending_finalize,
+                       :response_cat2 | :request_connection_failed | :request_timeout]
+                     :enter_recovery
+                   in [:finalizing_sending_upload, :response_final]
+                     :complete_upload_with_data
+                   in [:finalizing_sending_finalize | :recovery, :response_final]
+                     :complete_upload_finalized
+                   in [:recovery, :response_active]
+                     :realign_from_recovery
+                   in [:recovery, :response_cat2]
+                     :retry_recovery
+                   in [:cancelling, :response_cancelled]
+                     :complete_cancellation
+                   in [:cancelling, :user_cancel]
+                     :ignore_duplicate_cancel
+                   in [_, :global_deadline_exceeded]
+                     :fail_with_deadline_exceeded
+                   in [_, :user_cancel]
+                     :cancel_session
+                   in [:starting | :transmission_sending | :finalizing_sending_upload |
+                       :finalizing_sending_finalize | :recovery | :cancelling, :response_rejected]
+                     :fail_with_rejected
+                   in [:starting | :cancelling, :response_cat2] |
+                      [:starting | :transmission_sending | :finalizing_sending_upload |
+                       :finalizing_sending_finalize | :recovery | :cancelling, :response_fatal_bad_response]
+                     :fail_with_bad_response
+                   in [:starting | :transmission_sending | :finalizing_sending_upload |
+                       :finalizing_sending_finalize | :recovery | :cancelling,
+                       :request_retries_exhausted | :request_connection_failed | :request_timeout |
+                       :request_failed_unknown]
+                     :fail_with_request_error
+                   else
+                     :fail_with_unmatched_transition
+                   end
+
+          next_state, instructions = public_send recipe, state, event, config
+          Decision.new(
+            from_status:  state.status,
+            shape:        shape,
+            next_state:   next_state,
+            instructions: instructions
+          )
+        end
+        # rubocop:enable Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity,Metrics/MethodLength
+
+        ##
         # Top-level transition router. Matches [state.status, shape].
         #
         # @param state [State] Current state
         # @param event [Object] Input event
         # @param config [CompleteUploadConfig] Static configuration
         # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
-        #
-        # rubocop:disable Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity,Metrics/MethodLength
         def self.step state, event, config
-          shape = shape_of event
-
-          case [state.status, shape]
-          in [:initializing, :start_upload]
-            start_session state, config
-          in [:starting, :response_active]
-            begin_transmission state, event, config
-          in [:transmission_reading, :chunk_read_full]
-            send_chunk state, event
-          in [:transmission_reading, :chunk_read_eof_with_data]
-            send_upload_finalize state, event
-          in [:transmission_reading, :chunk_read_eof_empty]
-            send_finalize state
-          in [:transmission_sending, :response_active]
-            ack_chunk state, config
-          in [:transmission_sending | :finalizing_sending_upload | :finalizing_sending_finalize,
-              :response_cat2 | :request_connection_failed | :request_timeout]
-            enter_recovery state
-          in [:finalizing_sending_upload, :response_final]
-            complete_upload_with_data state, event
-          in [:finalizing_sending_finalize | :recovery, :response_final]
-            complete_upload_finalized state, event
-          in [:recovery, :response_active]
-            realign_from_recovery state, event
-          in [:recovery, :response_cat2]
-            retry_recovery state
-          in [:cancelling, :response_cancelled]
-            complete_cancellation state
-          in [:cancelling, :user_cancel]
-            [state, []]
-          in [_, :global_deadline_exceeded]
-            fail_with_deadline_exceeded state
-          in [_, :user_cancel]
-            cancel_session state
-          in [:starting | :transmission_sending | :finalizing_sending_upload |
-              :finalizing_sending_finalize | :recovery | :cancelling, :response_rejected]
-            fail_with_rejected state, event
-          in [:starting | :cancelling, :response_cat2] |
-             [:starting | :transmission_sending | :finalizing_sending_upload |
-              :finalizing_sending_finalize | :recovery | :cancelling, :response_fatal_bad_response]
-            fail_with_bad_response state, event
-          in [:starting | :transmission_sending | :finalizing_sending_upload |
-              :finalizing_sending_finalize | :recovery | :cancelling,
-              :request_retries_exhausted | :request_connection_failed | :request_timeout | :request_failed_unknown]
-            fail_with_request_error state, event
-          else
-            fail_with_unmatched_transition state, event
-          end
+          decision = decide state, event, config
+          [decision.next_state, decision.instructions]
         end
-        # rubocop:enable Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity,Metrics/MethodLength
 
-        def self.start_session state, config
+        def self.start_session state, _event, config
           next_state = state.with status: :starting
           instructions = [
             Instruction::SendStart.new(
@@ -162,7 +183,7 @@ module Gapic
           [next_state, [Instruction::FillBuffer.new(target_bytesize: chunk_size)]]
         end
 
-        def self.send_chunk state, event
+        def self.send_chunk state, event, _config
           next_state = state.with(
             status:           :transmission_sending,
             in_flight_length: event.bytes_buffered
@@ -178,7 +199,7 @@ module Gapic
           [next_state, instructions]
         end
 
-        def self.send_upload_finalize state, event
+        def self.send_upload_finalize state, event, _config
           next_state = state.with(
             status:           :finalizing_sending_upload,
             in_flight_length: event.bytes_buffered
@@ -194,7 +215,7 @@ module Gapic
           [next_state, instructions]
         end
 
-        def self.send_finalize state
+        def self.send_finalize state, _event, _config
           next_state = state.with(
             status:           :finalizing_sending_finalize,
             in_flight_length: 0
@@ -202,7 +223,7 @@ module Gapic
           [next_state, [Instruction::SendFinalize.new(url: state.upload_url)]]
         end
 
-        def self.ack_chunk state, config
+        def self.ack_chunk state, _event, config
           new_offset = state.offset + state.in_flight_length
           next_state = state.with(
             status:           :transmission_reading,
@@ -218,7 +239,7 @@ module Gapic
           [next_state, instructions]
         end
 
-        def self.enter_recovery state
+        def self.enter_recovery state, _event, _config
           next_state = state.with(
             status:           :recovery,
             in_flight_length: 0
@@ -226,7 +247,7 @@ module Gapic
           [next_state, [Instruction::SendQuery.new(url: state.upload_url)]]
         end
 
-        def self.retry_recovery state
+        def self.retry_recovery state, _event, _config
           next_state = state.with(
             status:           :recovery,
             in_flight_length: 0
@@ -234,7 +255,7 @@ module Gapic
           [next_state, [Instruction::SendQuery.new(url: state.upload_url)]]
         end
 
-        def self.complete_upload_with_data state, event
+        def self.complete_upload_with_data state, event, _config
           new_offset = state.offset + state.in_flight_length
           next_state = state.with(
             status:           :success,
@@ -249,7 +270,7 @@ module Gapic
           [next_state, instructions]
         end
 
-        def self.complete_upload_finalized state, event
+        def self.complete_upload_finalized state, event, _config
           next_state = state.with(
             status:           :success,
             in_flight_length: 0
@@ -257,7 +278,7 @@ module Gapic
           [next_state, [Instruction::TerminateSuccess.new(response: event)]]
         end
 
-        def self.realign_from_recovery state, event
+        def self.realign_from_recovery state, event, _config
           server_offset_str = header_value event.headers, "x-goog-upload-size-received"
           server_offset = server_offset_str.to_i
           next_state = state.with(
@@ -272,18 +293,22 @@ module Gapic
           [next_state, instructions]
         end
 
-        def self.complete_cancellation state
+        def self.complete_cancellation state, _event, _config
           err = Gapic::Common::UploadCancelledError.new
           next_state = state.with status: :cancelled, in_flight_length: 0, last_error: err
           [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
-        def self.cancel_session state
+        def self.ignore_duplicate_cancel state, _event, _config
+          [state, []]
+        end
+
+        def self.cancel_session state, _event, _config
           next_state = state.with status: :cancelling
           [next_state, [Instruction::SendCancel.new(url: state.upload_url)]]
         end
 
-        def self.fail_with_deadline_exceeded state
+        def self.fail_with_deadline_exceeded state, _event, _config
           err = Gapic::Common::DeadlineExceededError.new
           next_state = state.with(
             status:           :error,
@@ -293,7 +318,7 @@ module Gapic
           [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
-        def self.fail_with_rejected state, event
+        def self.fail_with_rejected state, event, _config
           err = Gapic::Common::UploadRejectedError.new event.body
           next_state = state.with(
             status:           :rejected,
@@ -303,7 +328,7 @@ module Gapic
           [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
-        def self.fail_with_bad_response state, event
+        def self.fail_with_bad_response state, event, _config
           err = Gapic::Common::BadResponseError.new event.status
           next_state = state.with(
             status:           :error,
@@ -313,7 +338,7 @@ module Gapic
           [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
-        def self.fail_with_request_error state, event
+        def self.fail_with_request_error state, event, _config
           err = event.source_error || Gapic::Common::Error.new(event.message || "Request failed")
           next_state = state.with(
             status:           :error,
@@ -323,7 +348,7 @@ module Gapic
           [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
-        def self.fail_with_unmatched_transition state, event
+        def self.fail_with_unmatched_transition state, event, _config
           shape = shape_of event
           action = STATE_DESCRIPTIONS[state.status] || "processing #{state.status}"
           happened = describe_event event, shape

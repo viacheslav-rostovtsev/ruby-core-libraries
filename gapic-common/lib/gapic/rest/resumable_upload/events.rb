@@ -19,6 +19,8 @@ module Gapic
     module ResumableUpload
       ##
       # Event vocabulary emitted by the Driver and dispatched to Core/Rules.
+      # Events are `outside-in` signaling. Something happened, e.g. a chunk of data
+      # was successfully read, and the Driver is reporting that to Core/Rules.
       #
       module Event
         ##
