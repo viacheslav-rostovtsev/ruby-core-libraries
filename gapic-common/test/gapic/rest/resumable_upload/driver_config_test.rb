@@ -33,7 +33,7 @@ class DriverConfigTest < Minitest::Test
       @requests = []
     end
 
-    def make_post_request uri:, body:, params:, options:
+    def make_post_request uri:, body:, params:, options:, method_name: nil
       @requests << { uri: uri, body: body, params: params, options: options }
       raise "Unexpected request: no scripted response left" if @responses.empty?
 

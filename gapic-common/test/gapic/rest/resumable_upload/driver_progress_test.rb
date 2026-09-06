@@ -32,7 +32,7 @@ class DriverProgressTest < Minitest::Test
       @responses = responses
     end
 
-    def make_post_request uri:, body: nil, params: {}, options: {}
+    def make_post_request uri:, body: nil, params: {}, options: {}, method_name: nil
       raise "No scripted response" if @responses.empty?
 
       @responses.shift

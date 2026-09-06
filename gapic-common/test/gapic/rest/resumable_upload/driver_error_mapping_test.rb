@@ -31,7 +31,7 @@ class DriverErrorMappingTest < Minitest::Test
   class FailingClientStub
     attr_accessor :error_to_raise
 
-    def make_post_request uri:, body: nil, params: {}, options: {}
+    def make_post_request uri:, body: nil, params: {}, options: {}, method_name: nil
       raise @error_to_raise if @error_to_raise
 
       raise "No error configured"
