@@ -52,7 +52,12 @@ module Gapic
         :start_retry_policy,               # [Gapic::Common::RetryPolicy, nil] Default policy for start command
         :control_plane_retry_policy,       # [Gapic::Common::RetryPolicy, nil] Policy for query/cancel commands
         :data_plane_retry_policy,          # [Gapic::Common::RetryPolicy, nil] Policy for upload/finalize
-        :on_progress                       # [Proc, nil] Callback: ->(bytes_uploaded, total_bytes)
+        :on_progress                       # [Proc, nil] Callback: ->(progress) with a Progress instance
+      )
+
+      Progress = Data.define(
+        :bytes_uploaded,                   # [Integer] Cumulative bytes acknowledged by the server
+        :total_bytes                       # [Integer, nil] Total upload size in bytes if known
       )
     end
   end

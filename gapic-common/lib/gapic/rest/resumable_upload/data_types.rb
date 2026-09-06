@@ -43,7 +43,7 @@ module Gapic
       # @!attribute [r] data_plane_retry_policy
       #   @return [Gapic::Common::RetryPolicy, nil] Policy for upload/finalize
       # @!attribute [r] on_progress
-      #   @return [Proc, nil] Callback invoked as `->(bytes_uploaded, total_bytes)`
+      #   @return [Proc, nil] Callback invoked as `->(progress)` with a {Progress} instance
       #
       CompleteUploadConfig = Data.define(
         :initial_url,
@@ -84,6 +84,26 @@ module Gapic
             control_plane_retry_policy: control_plane_retry_policy,
             data_plane_retry_policy:    data_plane_retry_policy,
             on_progress:                on_progress
+          )
+        end
+      end
+
+      ##
+      # Immutable progress snapshot passed to the `on_progress` callback.
+      #
+      # @!attribute [r] bytes_uploaded
+      #   @return [Integer] Cumulative bytes acknowledged by the server
+      # @!attribute [r] total_bytes
+      #   @return [Integer, nil] Total upload size in bytes if known, or nil
+      #
+      Progress = Data.define(
+        :bytes_uploaded,
+        :total_bytes
+      ) do
+        def initialize bytes_uploaded:, total_bytes: nil
+          super(
+            bytes_uploaded: bytes_uploaded,
+            total_bytes:    total_bytes
           )
         end
       end

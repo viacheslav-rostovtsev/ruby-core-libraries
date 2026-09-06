@@ -190,7 +190,7 @@ flowchart TD
 ### 3.6 Progress Notification Dispatching (`driver_progress_test.rb`)
 
 * **Safe no-op without callback**: `on_progress: nil` executes without raising.
-* **Happy path**: Callback receives `(bytes_uploaded, total_bytes)` once per instruction.
+* **Happy path**: Callback receives a `Progress` instance containing `bytes_uploaded` and `total_bytes` once per instruction.
 * **Pass-through of `total_bytes: nil`**: `total_bytes` passed as `nil` when upload size is unspecified.
 * **Unswallowed callback error propagation**: Exceptions raised within `on_progress` are not swallowed or caught; they immediately propagate to the caller in both `execute_notify_progress` and `Driver#run`.
 

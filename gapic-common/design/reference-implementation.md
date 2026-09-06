@@ -539,7 +539,13 @@ module Gapic
 
         # Synchronous side-effect: invokes user callback (exceptions propagate to caller)
         def execute_notify_progress(instruction)
-          @config.on_progress&.call(instruction.bytes_uploaded, instruction.total_bytes)
+          return unless @config.on_progress
+
+          progress = Progress.new(
+            bytes_uploaded: instruction.bytes_uploaded,
+            total_bytes: instruction.total_bytes
+          )
+          @config.on_progress.call(progress)
         end
 
         # Synchronous side-effect: adjusts in-memory buffer window and stream

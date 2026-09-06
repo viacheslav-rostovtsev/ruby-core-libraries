@@ -43,9 +43,9 @@ class GoldenPathTest < ShowcaseIntegrationTest
 
     assert_equal size, parsed["size"]
     assert_equal [
-      [524_288, 1_500_000],
-      [1_048_576, 1_500_000],
-      [1_500_000, 1_500_000]
+      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 524_288, total_bytes: 1_500_000),
+      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 1_048_576, total_bytes: 1_500_000),
+      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 1_500_000, total_bytes: 1_500_000)
     ], progress_records
   end
 end

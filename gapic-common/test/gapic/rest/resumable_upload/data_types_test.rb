@@ -94,4 +94,14 @@ class DataTypesTest < Minitest::Test
     realign = Instruction::RealignBuffer.new server_offset: 500
     assert_equal 500, realign.server_offset
   end
+
+  def test_progress_instantiation
+    progress = Progress.new bytes_uploaded: 512, total_bytes: 2048
+    assert_equal 512, progress.bytes_uploaded
+    assert_equal 2048, progress.total_bytes
+
+    progress_unknown = Progress.new bytes_uploaded: 1024
+    assert_equal 1024, progress_unknown.bytes_uploaded
+    assert_nil progress_unknown.total_bytes
+  end
 end

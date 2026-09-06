@@ -49,30 +49,30 @@ class DriverProgressTest < Minitest::Test
 
   def test_execute_notify_progress_happy_path_invoked_once
     calls = []
-    callback = ->(bytes_uploaded, total_bytes) { calls << [bytes_uploaded, total_bytes] }
+    callback = ->(progress) { calls << progress }
     driver = build_driver on_progress: callback
 
     instruction = Instruction::NotifyProgress.new bytes_uploaded: 500, total_bytes: 1000
     driver.send :execute_notify_progress, instruction
 
     assert_equal 1, calls.size
-    assert_equal [500, 1000], calls.first
+    assert_equal Progress.new(bytes_uploaded: 500, total_bytes: 1000), calls.first
   end
 
   def test_execute_notify_progress_total_bytes_nil_passes_through
     calls = []
-    callback = ->(bytes_uploaded, total_bytes) { calls << [bytes_uploaded, total_bytes] }
+    callback = ->(progress) { calls << progress }
     driver = build_driver on_progress: callback
 
     instruction = Instruction::NotifyProgress.new bytes_uploaded: 250, total_bytes: nil
     driver.send :execute_notify_progress, instruction
 
     assert_equal 1, calls.size
-    assert_equal [250, nil], calls.first
+    assert_equal Progress.new(bytes_uploaded: 250, total_bytes: nil), calls.first
   end
 
   def test_execute_notify_progress_raises_error_to_caller_when_callback_fails
-    callback = ->(_bytes, _total) { raise CustomCallbackError, "User UI crashed in progress callback" }
+    callback = ->(_progress) { raise CustomCallbackError, "User UI crashed in progress callback" }
     driver = build_driver on_progress: callback
 
     instruction = Instruction::NotifyProgress.new bytes_uploaded: 100, total_bytes: 1000
@@ -99,7 +99,7 @@ class DriverProgressTest < Minitest::Test
     ]
     stub = ScriptedClientStub.new responses
 
-    callback = ->(_bytes, _total) { raise CustomCallbackError, "Terminal failure in user progress handler" }
+    callback = ->(_progress) { raise CustomCallbackError, "Terminal failure in user progress handler" }
     config = CompleteUploadConfig.new(
       initial_url: "https://example.com/upload",
       stream:      StringIO.new("0123456789"),
