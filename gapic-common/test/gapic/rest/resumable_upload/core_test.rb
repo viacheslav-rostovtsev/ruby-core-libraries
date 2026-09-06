@@ -40,7 +40,7 @@ class CoreTest < Minitest::Test
     assert_nil state.chunk_granularity
     assert_equal 0, state.in_flight_length
     assert_nil state.last_error
-    assert_empty @core.last_decision
+    assert_nil @core.last_decision
   end
 
   def test_dispatch_updates_state_and_returns_instructions
@@ -48,11 +48,12 @@ class CoreTest < Minitest::Test
     assert_equal :starting, @core.state.status
     assert_equal 1, instructions.size
     assert_instance_of Instruction::SendStart, instructions.first
-    assert_equal 1, @core.last_decision.size
-    assert_equal :initializing, @core.last_decision.first.from_status
-    assert_equal :start_upload, @core.last_decision.first.shape
-    assert_equal @core.state, @core.last_decision.first.next_state
-    assert_equal instructions, @core.last_decision.first.instructions
+    assert_instance_of Decision, @core.last_decision
+    assert_equal :initializing, @core.last_decision.from_status
+    assert_equal :start_upload, @core.last_decision.shape
+    assert_equal :start_session, @core.last_decision.recipe
+    assert_equal @core.state, @core.last_decision.next_state
+    assert_equal instructions, @core.last_decision.instructions
 
     resp = Event::HttpResponse.new(
       status:  200,
@@ -70,10 +71,11 @@ class CoreTest < Minitest::Test
     assert_equal 1, instructions.size
     assert_instance_of Instruction::FillBuffer, instructions.first
     assert_equal 1024, instructions.first.target_bytesize
-    assert_equal 1, @core.last_decision.size
-    assert_equal :starting, @core.last_decision.first.from_status
-    assert_equal :response_active, @core.last_decision.first.shape
-    assert_equal @core.state, @core.last_decision.first.next_state
-    assert_equal instructions, @core.last_decision.first.instructions
+    assert_instance_of Decision, @core.last_decision
+    assert_equal :starting, @core.last_decision.from_status
+    assert_equal :response_active, @core.last_decision.shape
+    assert_equal :begin_transmission, @core.last_decision.recipe
+    assert_equal @core.state, @core.last_decision.next_state
+    assert_equal instructions, @core.last_decision.instructions
   end
 end

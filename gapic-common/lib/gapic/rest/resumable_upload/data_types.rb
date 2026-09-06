@@ -146,6 +146,8 @@ module Gapic
       #   @return [Symbol] The protocol status before the transition
       # @!attribute [r] shape
       #   @return [Symbol] The canonical event shape
+      # @!attribute [r] recipe
+      #   @return [Symbol] Selected transition recipe method name
       # @!attribute [r] next_state
       #   @return [State] The new protocol state snapshot after transition
       # @!attribute [r] instructions
@@ -154,13 +156,15 @@ module Gapic
       Decision = Data.define(
         :from_status,
         :shape,
+        :recipe,
         :next_state,
         :instructions
       ) do
-        def initialize from_status:, shape:, next_state:, instructions: []
+        def initialize from_status:, shape:, recipe:, next_state:, instructions: []
           super(
             from_status:  from_status,
             shape:        shape,
+            recipe:       recipe,
             next_state:   next_state,
             instructions: instructions
           )

@@ -137,6 +137,7 @@ module Gapic
           Decision.new(
             from_status:  state.status,
             shape:        shape,
+            recipe:       recipe,
             next_state:   next_state,
             instructions: instructions
           )

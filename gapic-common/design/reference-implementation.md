@@ -115,6 +115,7 @@ module Gapic
           Decision.new(
             from_status: state.status,
             shape: shape,
+            recipe: recipe,
             next_state: next_state,
             instructions: instructions
           )
@@ -384,7 +385,7 @@ module Gapic
         # @param config [CompleteUploadConfig]
         def initialize(config)
           @config = config
-          @last_decision = []
+          @last_decision = nil
           @state = State.new(
             status: :initializing, upload_url: nil, offset: 0,
             chunk_size: config.chunk_size || 8_388_608,
@@ -399,7 +400,7 @@ module Gapic
         def dispatch(event)
           decision = Rules.decide(@state, event, @config)
           @state = decision.next_state
-          @last_decision = [decision]
+          @last_decision = decision
           decision.instructions
         end
       end
