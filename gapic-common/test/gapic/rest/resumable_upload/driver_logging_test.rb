@@ -83,6 +83,89 @@ class DriverLoggingTest < Minitest::Test
     refute_nil upload_ids.first
 
     assert_equal ["ResumableUpload.start", "ResumableUpload.upload"], stub.method_names
+
+    info_recipes = recording.entries.select { |e| e.severity == Logger::INFO }.map { |e| e.message.fields["recipe"] }
+    assert_includes ["complete_upload_with_data", "complete_upload_finalized"], info_recipes.last
+  end
+
+  def test_multi_chunk_upload_logs_ack_chunk_and_completion
+    recording = RecordingLogger.new
+    run_two_chunk_upload_with_secret recording
+
+    info_recipes = recording.entries.select { |e| e.severity == Logger::INFO }.map { |e| e.message.fields["recipe"] }
+    assert_includes info_recipes, "ack_chunk"
+    assert(info_recipes.any? { |r| ["complete_upload_with_data", "complete_upload_finalized"].include? r })
+  end
+
+  def test_recovery_scenario_logs_enter_recovery_and_realign
+    recording = RecordingLogger.new
+    responses = [
+      FakeResponse.new(
+        200,
+        {
+          "X-Goog-Upload-Status" => "active",
+          "X-Goog-Upload-URL"    => "https://storage.googleapis.com/session?id=123"
+        },
+        ""
+      ),
+      FakeResponse.new(503, {}, "Service Unavailable"),
+      FakeResponse.new(
+        200,
+        {
+          "X-Goog-Upload-Status"        => "active",
+          "X-Goog-Upload-Size-Received" => "0"
+        },
+        ""
+      ),
+      FakeResponse.new(
+        200,
+        { "X-Goog-Upload-Status" => "final" },
+        "done"
+      )
+    ]
+
+    stub = FakeStub.new responses
+    config = CompleteUploadConfig.new(
+      initial_url: "https://storage.googleapis.com/upload",
+      stream:      StringIO.new("hello world"),
+      upload_size: 11,
+      chunk_size:  256
+    )
+
+    driver = Driver.new client_stub: stub, config: config, logger: recording
+    driver.run
+
+    info_recipes = recording.entries.select { |e| e.severity == Logger::INFO }.map { |e| e.message.fields["recipe"] }
+    assert_includes info_recipes, "enter_recovery"
+    assert_includes info_recipes, "realign_from_recovery"
+  end
+
+  def test_fatal_failure_logs_warn_with_fail_with_recipe
+    recording = RecordingLogger.new
+    responses = [
+      FakeResponse.new(
+        403,
+        { "X-Goog-Upload-Status" => "final" },
+        "Forbidden"
+      )
+    ]
+
+    stub = FakeStub.new responses
+    config = CompleteUploadConfig.new(
+      initial_url: "https://storage.googleapis.com/upload",
+      stream:      StringIO.new("hello world"),
+      upload_size: 11,
+      chunk_size:  256
+    )
+
+    driver = Driver.new client_stub: stub, config: config, logger: recording
+    assert_raises Gapic::Common::UploadRejectedError do
+      driver.run
+    end
+
+    warn_entries = recording.entries.select { |e| e.severity == Logger::WARN }
+    refute_empty warn_entries
+    assert(warn_entries.any? { |e| e.message.fields["recipe"]&.start_with? "fail_with_" })
   end
 
   def test_unmatched_transition_logs_warn_and_reraises

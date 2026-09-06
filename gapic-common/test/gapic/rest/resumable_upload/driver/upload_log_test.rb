@@ -41,10 +41,8 @@ class UploadLogTest < Minitest::Test
                                        on_progress: nil
   end
 
-  def test_decision_logs_debug_with_fields
-    next_state = State.new status: :starting, offset: 0, in_flight_length: 0
-    decision = Decision.new from_status: :initializing, shape: :start_upload, recipe: :start_session,
-                            next_state: next_state, instructions: []
+  def test_decision_logs_debug_with_fields_from_rules_decide
+    decision = Rules.decide State.new(status: :initializing), Event::StartUpload.new, @config
 
     @upload_log.decision decision
 
@@ -59,13 +57,11 @@ class UploadLogTest < Minitest::Test
     assert_equal "starting", fields["toStatus"]
     assert_equal 0, fields["offset"]
     assert_equal 0, fields["inFlightLength"]
-    assert_equal [], fields["instructions"]
+    assert_equal [{ "type" => "SendStart", "url" => "https://example.com/upload" }], fields["instructions"]
   end
 
   def test_lifecycle_start_session_logs_info
-    next_state = State.new status: :starting
-    decision = Decision.new from_status: :initializing, shape: :start_upload, recipe: :start_session,
-                            next_state: next_state, instructions: []
+    decision = Rules.decide State.new(status: :initializing), Event::StartUpload.new, @config
 
     @upload_log.lifecycle decision, @config
 
@@ -78,9 +74,9 @@ class UploadLogTest < Minitest::Test
   end
 
   def test_lifecycle_send_chunk_logs_debug
-    next_state = State.new status: :uploading, offset: 256, in_flight_length: 256
-    decision = Decision.new from_status: :uploading, shape: :chunk_read, recipe: :send_chunk,
-                            next_state: next_state, instructions: []
+    state = State.new status: :transmission_reading, upload_url: "https://example.com/session", offset: 0, chunk_size: 256
+    event = Event::ChunkRead.new bytes_buffered: 256, eof: false
+    decision = Rules.decide state, event, @config
 
     @upload_log.lifecycle decision, @config
 
@@ -88,23 +84,45 @@ class UploadLogTest < Minitest::Test
     assert_equal Logger::DEBUG, entry.severity
     fields = entry.message.fields
     assert_equal "send_chunk", fields["recipe"]
-    assert_equal 256, fields["offset"]
+    assert_equal 0, fields["offset"]
     assert_equal 256, fields["inFlightLength"]
   end
 
   def test_lifecycle_terminal_failure_logs_warn
-    err = StandardError.new "upload failed"
-    next_state = State.new status: :failed, last_error: err
-    decision = Decision.new from_status: :uploading, shape: :http_5xx, recipe: :fail_with_terminal_error,
-                            next_state: next_state, instructions: []
+    state = State.new status: :starting
+    event = Event::HttpResponse.new status: 403, headers: { "x-goog-upload-status" => "final" }, body: "Forbidden"
+    decision = Rules.decide state, event, @config
 
     @upload_log.lifecycle decision, @config
 
     entry = @recording.entries.first
     assert_equal Logger::WARN, entry.severity
     fields = entry.message.fields
-    assert_equal "fail_with_terminal_error", fields["recipe"]
-    assert_equal "upload failed", fields["error"]
+    assert_equal "fail_with_rejected", fields["recipe"]
+    assert_includes fields["error"], "Forbidden"
+  end
+
+  def test_lifecycle_silent_recipes_emit_no_logs
+    state = State.new status: :cancelling
+    decision = Rules.decide state, Event::Cancel.new, @config
+    assert_equal :ignore_duplicate_cancel, decision.recipe
+
+    @upload_log.lifecycle decision, @config
+
+    assert_empty @recording.entries
+  end
+
+  def test_lifecycle_table_matches_rules_recipes
+    lifecycle_keys = Driver::UploadLog::LIFECYCLE.keys
+    silent_keys = Driver::UploadLog::SILENT_RECIPES
+    all_upload_log_recipes = lifecycle_keys + silent_keys
+
+    assert_empty Rules::RECIPES - all_upload_log_recipes,
+                 "Rules recipes not covered by UploadLog::LIFECYCLE or SILENT_RECIPES"
+    assert_empty all_upload_log_recipes - Rules::RECIPES,
+                 "Extra recipes in UploadLog::LIFECYCLE or SILENT_RECIPES not in Rules::RECIPES"
+    assert_empty lifecycle_keys & silent_keys,
+                 "Recipes present in both UploadLog::LIFECYCLE and SILENT_RECIPES"
   end
 
   def test_wire_send_logs_debug_with_start_attempt_and_hex_body

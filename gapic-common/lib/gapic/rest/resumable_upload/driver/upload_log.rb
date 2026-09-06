@@ -26,6 +26,31 @@ module Gapic
         # Structured logging helper for a single Resumable Upload run.
         #
         class UploadLog
+          SILENT_RECIPES = [
+            :ignore_duplicate_cancel
+          ].freeze
+
+          LIFECYCLE = {
+            start_session:                  [:info, "Initiating resumable upload"],
+            begin_transmission:             [:info, "Upload session established"],
+            send_chunk:                     [:debug, "Sending upload chunk"],
+            send_upload_finalize:           [:info, "Sending final upload chunk"],
+            send_finalize:                  [:info, "Sending finalize command"],
+            ack_chunk:                      [:info, "Upload chunk acknowledged"],
+            enter_recovery:                 [:info, "Entering upload recovery"],
+            retry_recovery:                 [:info, "Retrying upload recovery query"],
+            realign_from_recovery:          [:info, "Resuming upload from server offset"],
+            complete_upload_with_data:      [:info, "Resumable upload completed"],
+            complete_upload_finalized:      [:info, "Resumable upload completed"],
+            cancel_session:                 [:info, "Canceling resumable upload"],
+            complete_cancellation:          [:info, "Resumable upload canceled"],
+            fail_with_deadline_exceeded:    [:warn, "Resumable upload failed"],
+            fail_with_rejected:             [:warn, "Resumable upload failed"],
+            fail_with_bad_response:         [:warn, "Resumable upload failed"],
+            fail_with_request_error:        [:warn, "Resumable upload failed"],
+            fail_with_unmatched_transition: [:warn, "Resumable upload failed"]
+          }.freeze
+
           attr_reader :upload_id
 
           def initialize stub_logger, upload_id:
@@ -49,90 +74,15 @@ module Gapic
             )
           end
 
-          # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
           def lifecycle decision, config
-            case decision.recipe
-            when :start_session
-              entry(
-                :info,
-                "Initiating resumable upload",
-                recipe:             decision.recipe,
-                uploadSize:         config.upload_size,
-                requestedChunkSize: config.chunk_size
-              )
-            when :begin_transmission
-              entry(
-                :info,
-                "Upload session established",
-                recipe:             decision.recipe,
-                effectiveChunkSize: decision.next_state.chunk_size,
-                granularity:        decision.next_state.chunk_granularity,
-                uploadUrl:          Abridge.url(decision.next_state.upload_url)
-              )
-            when :send_chunk
-              entry(
-                :debug,
-                "Sending upload chunk",
-                recipe:         decision.recipe,
-                offset:         decision.next_state.offset,
-                inFlightLength: decision.next_state.in_flight_length
-              )
-            when :ack_chunk
-              entry(
-                :info,
-                "Upload chunk acknowledged",
-                recipe: decision.recipe,
-                offset: decision.next_state.offset
-              )
-            when :complete_upload
-              entry(
-                :info,
-                "Resumable upload completed",
-                recipe: decision.recipe,
-                offset: decision.next_state.offset
-              )
-            when :enter_recovery
-              entry(
-                :info,
-                "Entering upload recovery",
-                recipe: decision.recipe,
-                offset: decision.next_state.offset
-              )
-            when :resume_from_query
-              entry(
-                :info,
-                "Resuming upload from server offset",
-                recipe: decision.recipe,
-                offset: decision.next_state.offset
-              )
-            when :send_cancel
-              entry(
-                :info,
-                "Canceling resumable upload",
-                recipe:    decision.recipe,
-                uploadUrl: Abridge.url(decision.next_state.upload_url)
-              )
-            when :complete_cancellation
-              entry(
-                :info,
-                "Resumable upload canceled",
-                recipe: decision.recipe
-              )
-            when :fail_with_bad_session,
-                 :fail_with_range_drift,
-                 :fail_with_protocol_error,
-                 :fail_with_terminal_error,
-                 :fail_with_unmatched_transition
-              error_msg = decision.next_state.last_error&.message || decision.next_state.last_error.to_s
-              entry(
-                :warn,
-                "Resumable upload failed",
-                recipe: decision.recipe,
-                error:  error_msg
-              )
-            end
+            return if SILENT_RECIPES.include? decision.recipe
+
+            severity, message = LIFECYCLE[decision.recipe]
+            return unless severity
+
+            extra_fields = lifecycle_fields decision, config
+            entry severity, message, recipe: decision.recipe, **extra_fields
           end
-          # rubocop:enable Metrics/AbcSize, Metrics/MethodLength
 
           def wire_send method:, url:, headers:, start_attempt:, body_size: nil, body: nil, body_is_error: false
             fields = {
@@ -197,6 +147,32 @@ module Gapic
           end
 
           private
+
+          def lifecycle_fields decision, config
+            state = decision.next_state
+            case decision.recipe
+            when :start_session
+              { uploadSize: config.upload_size, requestedChunkSize: config.chunk_size }
+            when :begin_transmission
+              {
+                effectiveChunkSize: state.chunk_size,
+                granularity:        state.chunk_granularity,
+                uploadUrl:          Abridge.url(state.upload_url)
+              }
+            when :send_chunk, :send_upload_finalize
+              { offset: state.offset, inFlightLength: state.in_flight_length }
+            when :send_finalize, :ack_chunk, :enter_recovery, :retry_recovery,
+                 :realign_from_recovery, :complete_upload_with_data, :complete_upload_finalized
+              { offset: state.offset }
+            when :cancel_session
+              { uploadUrl: Abridge.url(state.upload_url) }
+            when :fail_with_deadline_exceeded, :fail_with_rejected, :fail_with_bad_response,
+                 :fail_with_request_error, :fail_with_unmatched_transition
+              { error: state.last_error&.message || state.last_error.to_s }
+            else
+              {}
+            end
+          end
 
           def entry severity, log_msg, **fields
             @stub_logger.public_send severity do |builder|

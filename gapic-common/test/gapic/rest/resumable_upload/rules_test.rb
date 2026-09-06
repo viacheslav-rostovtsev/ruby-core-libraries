@@ -174,4 +174,10 @@ class RulesTest < Minitest::Test
     assert_equal 1, final_instructions.size
     assert_instance_of Instruction::TerminateFailure, final_instructions.first
   end
+
+  def test_all_recipes_respond_to_rules_method
+    Rules::RECIPES.each do |recipe|
+      assert_respond_to Rules, recipe
+    end
+  end
 end

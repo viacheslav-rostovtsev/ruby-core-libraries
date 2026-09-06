@@ -48,6 +48,31 @@ module Gapic
         }.freeze
 
         ##
+        # Canonical list of recipe symbols emitted by {Rules.decide}.
+        #
+        RECIPES = [
+          :start_session,
+          :begin_transmission,
+          :send_chunk,
+          :send_upload_finalize,
+          :send_finalize,
+          :ack_chunk,
+          :enter_recovery,
+          :retry_recovery,
+          :realign_from_recovery,
+          :complete_upload_with_data,
+          :complete_upload_finalized,
+          :cancel_session,
+          :complete_cancellation,
+          :ignore_duplicate_cancel,
+          :fail_with_deadline_exceeded,
+          :fail_with_rejected,
+          :fail_with_bad_response,
+          :fail_with_request_error,
+          :fail_with_unmatched_transition
+        ].freeze
+
+        ##
         # Classifies incoming event into a canonical shape symbol.
         #
         # @param event [Object] Input event
@@ -132,6 +157,8 @@ module Gapic
                    else
                      :fail_with_unmatched_transition
                    end
+
+          raise ArgumentError, "unknown recipe: #{recipe}" unless RECIPES.include? recipe
 
           next_state, instructions = public_send recipe, state, event, config
           Decision.new(
