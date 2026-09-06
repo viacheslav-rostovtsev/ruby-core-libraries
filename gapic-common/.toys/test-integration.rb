@@ -59,7 +59,7 @@ def run
 
   begin
     wait_for_showcase! pid, port, log_path
-    ENV["SHOWCASE_ENDPOINT"] = "localhost:#{port}"
+    ENV["SHOWCASE_ENDPOINT"] = "http://localhost:#{port}"
     run_minitest
   ensure
     if pid

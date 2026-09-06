@@ -16,7 +16,7 @@ toys test-integration --name /resumable_upload/ --seed 1234
 
 ## Showcase Server Management & Lifecycle
 
-The `toys test-integration` command ([.toys/test-integration.rb](file:///usr/local/google/home/virost/src/omega/ruby-core-libraries/gapic-common/.toys/test-integration.rb)) manages the `gapic-showcase` server lifecycle automatically:
+The `toys test-integration` command (`.toys/test-integration.rb`) manages the `gapic-showcase` server lifecycle automatically:
 
 1. **Existing Endpoint (`SHOWCASE_ENDPOINT`)**:
    - If `ENV["SHOWCASE_ENDPOINT"]` is present and non-empty, `toys test-integration` skips binary resolution and runs the Minitest suite directly against that endpoint.
@@ -35,5 +35,5 @@ The `toys test-integration` command ([.toys/test-integration.rb](file:///usr/loc
    - Polls `127.0.0.1:<port>` with a 10-second monotonic clock budget while checking `Process.waitpid2` (`WNOHANG`) on each iteration. If the process exits prematurely or fails to accept TCP connections within 10 seconds, the runner prints the path to the log file and exits with status `1`.
 
 5. **Execution & Teardown**:
-   - Sets `ENV["SHOWCASE_ENDPOINT"] = "localhost:#{port}"` and runs the Minitest suite (`integration/**/*_test.rb`).
+   - Sets `ENV["SHOWCASE_ENDPOINT"] = "http://localhost:#{port}"` and runs the Minitest suite (`integration/**/*_test.rb`).
    - An `ensure` block sends `SIGTERM` to the entire process group (`-TERM`) and reaps the child process so no background showcase processes are leaked.
