@@ -114,53 +114,56 @@ class DriverLoggingTest < Minitest::Test
     assert_equal "unmatched transition in state", fields["error"]
   end
 
-  def test_redaction_of_payload_session_url_and_authorization_header
+  def test_full_log_corpus_redacts_secrets
     recording = RecordingLogger.new
-    sentinel_payload = "SECRET123_PAYLOAD_DATA"
-    responses = [
-      FakeResponse.new(
-        200,
-        {
-          "X-Goog-Upload-Status" => "active",
-          "X-Goog-Upload-URL"    => "https://storage.googleapis.com/session?sid=SECRET123"
-        },
-        ""
-      ),
-      FakeResponse.new(
-        200,
-        { "X-Goog-Upload-Status" => "final" },
-        "done"
-      )
-    ]
+    run_two_chunk_upload_with_secret recording
 
-    stub = FakeStub.new responses
-    config = CompleteUploadConfig.new(
-      initial_url:     "https://storage.googleapis.com/upload?key=SECRET123",
-      initial_headers: { "Authorization" => "Bearer SECRET123" },
-      stream:          StringIO.new(sentinel_payload),
-      upload_size:     sentinel_payload.bytesize,
-      chunk_size:      256
-    )
-
-    driver = Driver.new client_stub: stub, config: config, logger: recording
-    driver.run
-
-    recording.entries.each do |entry|
-      full_dump = entry.message.to_s
-      refute_includes full_dump, "SECRET123"
-      refute_includes full_dump, sentinel_payload
-    end
+    corpus = log_corpus recording
+    refute_includes corpus, "SECRET-123456"
   end
 
-  def test_total_logged_bytes_for_run_under_64kb
+  def test_full_log_corpus_size_under_64kib
     recording = RecordingLogger.new
-    chunk_data = "X" * 32_768
+    run_two_chunk_upload_with_secret recording
+
+    corpus = log_corpus recording
+    assert_operator corpus.bytesize, :<, 65_536
+  end
+
+  private
+
+  def run_two_chunk_upload_with_secret recording
+    chunk_size = 8 * 1024 * 1024
+    secret = "SECRET-123456"
+    binary_prefix = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09".b
+
+    half = (chunk_size / 2) - 10
+    chunk1 = binary_prefix + ("A" * half) + secret + ("A" * (chunk_size - 10 - half - secret.bytesize))
+    chunk2 = binary_prefix + ("A" * (chunk_size - 10))
+    stream_data = chunk1 + chunk2
+
     responses = [
       FakeResponse.new(
         200,
         {
           "X-Goog-Upload-Status" => "active",
-          "X-Goog-Upload-URL"    => "https://storage.googleapis.com/session?id=1"
+          "X-Goog-Upload-URL"    => "https://storage.googleapis.com/session?sid=#{secret}"
+        },
+        ""
+      ),
+      FakeResponse.new(
+        200,
+        {
+          "X-Goog-Upload-Status"        => "active",
+          "X-Goog-Upload-Size-Received" => chunk_size.to_s
+        },
+        ""
+      ),
+      FakeResponse.new(
+        200,
+        {
+          "X-Goog-Upload-Status"        => "active",
+          "X-Goog-Upload-Size-Received" => (chunk_size * 2).to_s
         },
         ""
       ),
@@ -173,16 +176,14 @@ class DriverLoggingTest < Minitest::Test
 
     stub = FakeStub.new responses
     config = CompleteUploadConfig.new(
-      initial_url: "https://storage.googleapis.com/upload",
-      stream:      StringIO.new(chunk_data),
-      upload_size: chunk_data.bytesize,
-      chunk_size:  65_536
+      initial_url:     "https://storage.googleapis.com/upload?token=#{secret}",
+      initial_headers: { "Authorization" => "Bearer #{secret}" },
+      stream:          StringIO.new(stream_data),
+      upload_size:     stream_data.bytesize,
+      chunk_size:      chunk_size
     )
 
     driver = Driver.new client_stub: stub, config: config, logger: recording
     driver.run
-
-    total_bytes = recording.entries.sum { |e| e.message.to_s.bytesize }
-    assert_operator total_bytes, :<, 65_536
   end
 end

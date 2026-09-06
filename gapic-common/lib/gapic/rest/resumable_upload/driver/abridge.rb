@@ -66,7 +66,13 @@ module Gapic
 
             headers.each_with_object({}) do |(k, v), acc|
               key_str = k.to_s
-              acc[key_str] = key_str.downcase.start_with?("x-goog-upload-") ? v : "<...>"
+              acc[key_str] = if key_str.downcase == "x-goog-upload-url"
+                               url v
+                             elsif key_str.downcase.start_with? "x-goog-upload-"
+                               v
+                             else
+                               "<...>"
+                             end
             end
           end
 

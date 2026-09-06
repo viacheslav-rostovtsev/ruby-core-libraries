@@ -144,3 +144,11 @@ class RecordingLogger < Logger
     @entries << Entry.new(severity: severity, message: msg)
   end
 end
+
+def log_corpus recording_logger
+  formatter = Google::Logging::StructuredFormatter.new
+  recording_logger.entries.map do |entry|
+    sev = Logger::SEV_LABEL[entry.severity] || "INFO"
+    formatter.call sev, Time.now, nil, entry.message
+  end.join
+end
