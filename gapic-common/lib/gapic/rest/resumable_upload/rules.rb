@@ -209,8 +209,9 @@ module Gapic
             offset:           new_offset,
             in_flight_length: 0
           )
+          progress = Progress.new bytes_uploaded: new_offset, total_bytes: config.upload_size
           instructions = [
-            Instruction::NotifyProgress.new(bytes_uploaded: new_offset, total_bytes: config.upload_size),
+            Instruction::NotifyProgress.new(progress: progress),
             Instruction::RealignBuffer.new(server_offset: new_offset),
             Instruction::FillBuffer.new(target_bytesize: state.chunk_size)
           ]
@@ -240,8 +241,9 @@ module Gapic
             offset:           new_offset,
             in_flight_length: 0
           )
+          progress = Progress.new bytes_uploaded: new_offset, total_bytes: new_offset
           instructions = [
-            Instruction::NotifyProgress.new(bytes_uploaded: new_offset, total_bytes: new_offset),
+            Instruction::NotifyProgress.new(progress: progress),
             Instruction::TerminateSuccess.new(response: event)
           ]
           [next_state, instructions]

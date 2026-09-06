@@ -185,8 +185,9 @@ module Gapic
             offset: new_offset,
             in_flight_length: 0
           )
+          progress = Progress.new(bytes_uploaded: new_offset, total_bytes: config.upload_size)
           instructions = [
-            Instruction::NotifyProgress.new(bytes_uploaded: new_offset, total_bytes: config.upload_size),
+            Instruction::NotifyProgress.new(progress: progress),
             Instruction::RealignBuffer.new(server_offset: new_offset),
             Instruction::FillBuffer.new(target_bytesize: state.chunk_size)
           ]
@@ -216,8 +217,9 @@ module Gapic
             offset: new_offset,
             in_flight_length: 0
           )
+          progress = Progress.new(bytes_uploaded: new_offset, total_bytes: new_offset)
           instructions = [
-            Instruction::NotifyProgress.new(bytes_uploaded: new_offset, total_bytes: new_offset),
+            Instruction::NotifyProgress.new(progress: progress),
             Instruction::TerminateSuccess.new(response: event)
           ]
           [next_state, instructions]
@@ -539,13 +541,7 @@ module Gapic
 
         # Synchronous side-effect: invokes user callback (exceptions propagate to caller)
         def execute_notify_progress(instruction)
-          return unless @config.on_progress
-
-          progress = Progress.new(
-            bytes_uploaded: instruction.bytes_uploaded,
-            total_bytes: instruction.total_bytes
-          )
-          @config.on_progress.call(progress)
+          @config.on_progress&.call(instruction.progress)
         end
 
         # Synchronous side-effect: adjusts in-memory buffer window and stream

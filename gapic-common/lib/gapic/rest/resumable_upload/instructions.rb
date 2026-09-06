@@ -85,11 +85,11 @@ module Gapic
         end
 
         ##
-        # Invoke user progress callback with bytes_uploaded and total_bytes.
+        # Invoke user progress callback with a Progress instance.
         #
-        NotifyProgress = Data.define :bytes_uploaded, :total_bytes do
-          def initialize bytes_uploaded:, total_bytes: nil
-            super bytes_uploaded: bytes_uploaded, total_bytes: total_bytes
+        NotifyProgress = Data.define :progress do
+          def initialize progress:
+            super progress: progress
           end
         end
 
