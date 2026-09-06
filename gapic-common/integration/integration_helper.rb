@@ -26,7 +26,7 @@ require "gapic/rest/resumable_upload"
 # Base class for Showcase integration tests.
 #
 class ShowcaseIntegrationTest < Minitest::Test
-  UPLOAD_PATH = "resumable/upload/v1beta1/files:upload"
+  UPLOAD_PATH = "/resumable/upload/v1beta1/files:upload"
 
   attr_reader :progress_records
 
