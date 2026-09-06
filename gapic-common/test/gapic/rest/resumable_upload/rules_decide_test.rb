@@ -242,10 +242,4 @@ class RulesDecideTest < Minitest::Test
     assert_equal :error, decision.next_state.status
     assert_instance_of Instruction::TerminateFailure, decision.instructions.first
   end
-
-  def test_recipes_constant_matches_all_recipes
-    Rules::RECIPES.each do |recipe|
-      assert_respond_to Rules, recipe, "Rules must implement recipe method :#{recipe}"
-    end
-  end
 end

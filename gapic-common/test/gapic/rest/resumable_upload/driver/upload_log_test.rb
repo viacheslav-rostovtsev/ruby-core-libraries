@@ -128,7 +128,11 @@ class UploadLogTest < Minitest::Test
   def test_wire_send_logs_debug_with_start_attempt_and_hex_body
     @upload_log.wire_send method: "POST",
                           url: "https://example.com/session?key=SECRET",
-                          headers: { "X-Goog-Upload-Command" => "upload", "Authorization" => "Bearer SECRET" },
+                          headers: {
+                            "X-Goog-Upload-Command" => "upload",
+                            "X-Goog-Upload-Offset"  => "256",
+                            "Authorization"         => "Bearer SECRET"
+                          },
                           start_attempt: 2,
                           body_size: 4,
                           body: "test"
@@ -137,6 +141,8 @@ class UploadLogTest < Minitest::Test
     assert_equal Logger::DEBUG, entry.severity
     fields = entry.message.fields
     assert_equal "POST", fields["method"]
+    assert_equal "upload", fields["command"]
+    assert_equal 256, fields["offset"]
     assert_equal "https://example.com/session?key=<...>", fields["url"]
     assert_equal 2, fields["startAttempt"]
     assert_equal 4, fields["bodySize"]
@@ -147,7 +153,11 @@ class UploadLogTest < Minitest::Test
 
   def test_wire_receive_logs_debug
     event = Event::HttpResponse.new status: 200,
-                                    headers: { "X-Goog-Upload-Status" => "active" },
+                                    headers: {
+                                      "X-Goog-Upload-Status"            => "active",
+                                      "X-Goog-Upload-Size-Received"     => "256",
+                                      "X-Goog-Upload-Chunk-Granularity" => "256"
+                                    },
                                     body: "ok"
 
     @upload_log.wire_receive event
@@ -156,6 +166,9 @@ class UploadLogTest < Minitest::Test
     assert_equal Logger::DEBUG, entry.severity
     fields = entry.message.fields
     assert_equal 200, fields["status"]
+    assert_equal "active", fields["uploadStatus"]
+    assert_equal 256, fields["sizeReceived"]
+    assert_equal 256, fields["granularity"]
     assert_equal "6f6b", fields["body"]
   end
 

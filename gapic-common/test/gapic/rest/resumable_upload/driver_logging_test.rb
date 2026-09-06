@@ -88,12 +88,14 @@ class DriverLoggingTest < Minitest::Test
     assert_includes ["complete_upload_with_data", "complete_upload_finalized"], info_recipes.last
   end
 
-  def test_multi_chunk_upload_logs_ack_chunk_and_completion
+  def test_multi_chunk_upload_logs_lifecycle_entries
     recording = RecordingLogger.new
     run_two_chunk_upload_with_secret recording
 
     info_recipes = recording.entries.select { |e| e.severity == Logger::INFO }.map { |e| e.message.fields["recipe"] }
-    assert_includes info_recipes, "ack_chunk"
+    refute_includes info_recipes, "ack_chunk"
+    assert_includes info_recipes, "start_session"
+    assert_includes info_recipes, "begin_transmission"
     assert(info_recipes.any? { |r| ["complete_upload_with_data", "complete_upload_finalized"].include? r })
   end
 

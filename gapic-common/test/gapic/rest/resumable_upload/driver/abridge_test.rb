@@ -39,11 +39,17 @@ class AbridgeTest < Minitest::Test
     assert_equal "#{expected_prefix}... <100 bytes>", Driver::Abridge.bytes(large)
   end
 
-  def test_error_body_truncates_at_512_bytes
+  def test_error_body_truncates_at_512_bytes_and_scrubs_invalid_utf8
     assert_nil Driver::Abridge.error_body(nil)
 
     long_err = "E" * 600
     assert_equal 512, Driver::Abridge.error_body(long_err).bytesize
+
+    invalid_utf8 = "error \xFF\xFE message".b
+    scrubbed = Driver::Abridge.error_body invalid_utf8
+    assert scrubbed.valid_encoding?
+    assert_includes scrubbed, "error "
+    assert_includes scrubbed, " message"
   end
 
   def test_url_elides_query_parameter_values

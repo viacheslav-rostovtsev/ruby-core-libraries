@@ -41,7 +41,7 @@ module Gapic
           def error_body data
             return nil if data.nil?
 
-            data.to_s[0, 512]
+            data.to_s.dup.force_encoding(Encoding::UTF_8).scrub[0, 512]
           end
 
           def url url

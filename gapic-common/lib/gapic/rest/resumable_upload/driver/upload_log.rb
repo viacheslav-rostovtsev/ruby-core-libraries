@@ -27,28 +27,28 @@ module Gapic
         #
         class UploadLog
           SILENT_RECIPES = [
-            :ignore_duplicate_cancel
+            :ack_chunk,                     # per-chunk transition, doesn't belong at INFO
+            :ignore_duplicate_cancel,       # duplicate cancel signal, no state change
+            :fail_with_unmatched_transition # raises before Decision exists, logged by #unmatched_transition
           ].freeze
 
           LIFECYCLE = {
-            start_session:                  [:info, "Initiating resumable upload"],
-            begin_transmission:             [:info, "Upload session established"],
-            send_chunk:                     [:debug, "Sending upload chunk"],
-            send_upload_finalize:           [:info, "Sending final upload chunk"],
-            send_finalize:                  [:info, "Sending finalize command"],
-            ack_chunk:                      [:info, "Upload chunk acknowledged"],
-            enter_recovery:                 [:info, "Entering upload recovery"],
-            retry_recovery:                 [:info, "Retrying upload recovery query"],
-            realign_from_recovery:          [:info, "Resuming upload from server offset"],
-            complete_upload_with_data:      [:info, "Resumable upload completed"],
-            complete_upload_finalized:      [:info, "Resumable upload completed"],
-            cancel_session:                 [:info, "Canceling resumable upload"],
-            complete_cancellation:          [:info, "Resumable upload canceled"],
-            fail_with_deadline_exceeded:    [:warn, "Resumable upload failed"],
-            fail_with_rejected:             [:warn, "Resumable upload failed"],
-            fail_with_bad_response:         [:warn, "Resumable upload failed"],
-            fail_with_request_error:        [:warn, "Resumable upload failed"],
-            fail_with_unmatched_transition: [:warn, "Resumable upload failed"]
+            start_session:               [:info, "Initiating resumable upload"],
+            begin_transmission:          [:info, "Upload session established"],
+            send_chunk:                  [:debug, "Sending upload chunk"],
+            send_upload_finalize:        [:info, "Sending final upload chunk"],
+            send_finalize:               [:info, "Sending finalize command"],
+            enter_recovery:              [:info, "Entering upload recovery"],
+            retry_recovery:              [:info, "Retrying upload recovery query"],
+            realign_from_recovery:       [:info, "Resuming upload from server offset"],
+            complete_upload_with_data:   [:info, "Resumable upload completed"],
+            complete_upload_finalized:   [:info, "Resumable upload completed"],
+            cancel_session:              [:info, "Canceling resumable upload"],
+            complete_cancellation:       [:info, "Resumable upload canceled"],
+            fail_with_deadline_exceeded: [:warn, "Resumable upload failed"],
+            fail_with_rejected:          [:warn, "Resumable upload failed"],
+            fail_with_bad_response:      [:warn, "Resumable upload failed"],
+            fail_with_request_error:     [:warn, "Resumable upload failed"]
           }.freeze
 
           attr_reader :upload_id
@@ -85,12 +85,16 @@ module Gapic
           end
 
           def wire_send method:, url:, headers:, start_attempt:, body_size: nil, body: nil, body_is_error: false
+            command = Rules.header_value headers, "x-goog-upload-command"
+            offset = Rules.header_value headers, "x-goog-upload-offset"
             fields = {
               method:       method,
               url:          Abridge.url(url),
               headers:      Abridge.headers(headers),
               startAttempt: start_attempt
             }
+            fields[:command] = command if command
+            fields[:offset] = offset.to_i if offset
             fields[:bodySize] = body_size if body_size
             fields[:body] = body_is_error ? Abridge.error_body(body) : Abridge.bytes(body) if body
 
@@ -98,13 +102,19 @@ module Gapic
           end
 
           def wire_receive event
-            entry(
-              :debug,
-              "Received HTTP #{event.status}",
+            upload_status = Rules.header_value event.headers, "x-goog-upload-status"
+            size_recv = Rules.header_value event.headers, "x-goog-upload-size-received"
+            gran = Rules.header_value event.headers, "x-goog-upload-chunk-granularity"
+            fields = {
               status:  event.status,
               headers: Abridge.headers(event.headers),
               body:    event.status >= 400 ? Abridge.error_body(event.body) : Abridge.bytes(event.body)
-            )
+            }
+            fields[:uploadStatus] = upload_status if upload_status
+            fields[:sizeReceived] = size_recv.to_i if size_recv
+            fields[:granularity] = gran.to_i if gran
+
+            entry :debug, "Received HTTP #{event.status}", **fields
           end
 
           def wire_failure event
@@ -161,13 +171,13 @@ module Gapic
               }
             when :send_chunk, :send_upload_finalize
               { offset: state.offset, inFlightLength: state.in_flight_length }
-            when :send_finalize, :ack_chunk, :enter_recovery, :retry_recovery,
+            when :send_finalize, :enter_recovery, :retry_recovery,
                  :realign_from_recovery, :complete_upload_with_data, :complete_upload_finalized
               { offset: state.offset }
             when :cancel_session
               { uploadUrl: Abridge.url(state.upload_url) }
             when :fail_with_deadline_exceeded, :fail_with_rejected, :fail_with_bad_response,
-                 :fail_with_request_error, :fail_with_unmatched_transition
+                 :fail_with_request_error
               { error: state.last_error&.message || state.last_error.to_s }
             else
               {}
