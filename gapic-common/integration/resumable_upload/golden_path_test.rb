@@ -21,7 +21,7 @@ require "stringio"
 ##
 # Golden path integration tests for ResumableUpload Driver against Showcase.
 #
-class GoldenPathTest < Minitest::Test
+class GoldenPathTest < ShowcaseIntegrationTest
   def test_multi_chunk_known_size
     size = 1_500_000
     chunk_size = 524_288

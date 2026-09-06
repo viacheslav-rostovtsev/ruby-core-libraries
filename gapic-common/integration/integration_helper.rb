@@ -23,9 +23,9 @@ require "gapic/rest"
 require "gapic/rest/resumable_upload"
 
 ##
-# Helper methods for Showcase integration tests.
+# Base class for Showcase integration tests.
 #
-module ShowcaseIntegrationHelper
+class ShowcaseIntegrationTest < Minitest::Test
   UPLOAD_PATH = "resumable/upload/v1beta1/files:upload"
 
   attr_reader :progress_records
@@ -41,7 +41,7 @@ module ShowcaseIntegrationHelper
 
   def payload size
     pattern = "0123456789".b
-    (pattern * ((size / pattern.bytesize) + 1)).byteslice(0, size)
+    (pattern * ((size / pattern.bytesize) + 1)).byteslice 0, size
   end
 
   def showcase_client_stub
@@ -56,10 +56,8 @@ module ShowcaseIntegrationHelper
     @progress_records = []
     defaults = {
       initial_url: UPLOAD_PATH,
-      on_progress: ->(bytes_uploaded, total_bytes) { @progress_records << [bytes_uploaded, total_bytes] }
+      on_progress: ->(progress) { @progress_records << progress }
     }
     Gapic::Rest::ResumableUpload::CompleteUploadConfig.new(**defaults, **overrides)
   end
 end
-
-Minitest::Test.prepend ShowcaseIntegrationHelper
