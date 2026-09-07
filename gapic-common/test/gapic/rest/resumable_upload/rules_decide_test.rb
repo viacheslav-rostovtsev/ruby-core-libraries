@@ -35,13 +35,27 @@ class RulesDecideTest < Minitest::Test
     )
   end
 
+  def test_recipe_phases_partition
+    notifying = Rules::RECIPE_PHASES.keys
+    non_notifying = Rules::NON_NOTIFYING_RECIPES
+    all_classified = notifying + non_notifying
+
+    assert_empty Rules::RECIPES - all_classified,
+                 "Recipes missing from RECIPE_PHASES or NON_NOTIFYING_RECIPES"
+    assert_empty all_classified - Rules::RECIPES,
+                 "Phantom recipes in RECIPE_PHASES or NON_NOTIFYING_RECIPES"
+    assert_empty notifying & non_notifying,
+                 "Recipes present in both RECIPE_PHASES and NON_NOTIFYING_RECIPES"
+  end
+
   def test_row_initializing_start_upload
     decision = Rules.decide State.new(status: :initializing), Event::StartUpload.new, @config
     assert_equal :initializing, decision.from_status
     assert_equal :start_upload, decision.shape
     assert_equal :start_session, decision.recipe
     assert_equal :starting, decision.next_state.status
-    assert_instance_of Instruction::SendStart, decision.instructions.first
+    assert_recipe_progress_notification decision
+    assert_instance_of Instruction::SendStart, decision.instructions[1]
   end
 
   def test_row_starting_response_active
@@ -54,7 +68,8 @@ class RulesDecideTest < Minitest::Test
     assert_equal :response_active, decision.shape
     assert_equal :begin_transmission, decision.recipe
     assert_equal :transmission_reading, decision.next_state.status
-    assert_instance_of Instruction::FillBuffer, decision.instructions.first
+    assert_recipe_progress_notification decision
+    assert_instance_of Instruction::FillBuffer, decision.instructions[1]
   end
 
   def test_row_transmission_reading_chunk_read_full
@@ -67,6 +82,7 @@ class RulesDecideTest < Minitest::Test
     assert_equal :chunk_read_full, decision.shape
     assert_equal :send_chunk, decision.recipe
     assert_equal :transmission_sending, decision.next_state.status
+    assert_recipe_progress_notification decision
     assert_instance_of Instruction::SendChunk, decision.instructions.first
     refute decision.instructions.first.finalize
   end
@@ -81,8 +97,9 @@ class RulesDecideTest < Minitest::Test
     assert_equal :chunk_read_eof_with_data, decision.shape
     assert_equal :send_upload_finalize, decision.recipe
     assert_equal :finalizing_sending_upload, decision.next_state.status
-    assert_instance_of Instruction::SendChunk, decision.instructions.first
-    assert decision.instructions.first.finalize
+    assert_recipe_progress_notification decision
+    assert_instance_of Instruction::SendChunk, decision.instructions[1]
+    assert decision.instructions[1].finalize
   end
 
   def test_row_transmission_reading_chunk_read_eof_empty
@@ -95,7 +112,8 @@ class RulesDecideTest < Minitest::Test
     assert_equal :chunk_read_eof_empty, decision.shape
     assert_equal :send_finalize, decision.recipe
     assert_equal :finalizing_sending_finalize, decision.next_state.status
-    assert_instance_of Instruction::SendFinalize, decision.instructions.first
+    assert_recipe_progress_notification decision
+    assert_instance_of Instruction::SendFinalize, decision.instructions[1]
   end
 
   def test_row_transmission_sending_response_active
@@ -112,6 +130,7 @@ class RulesDecideTest < Minitest::Test
     assert_equal :response_active, decision.shape
     assert_equal :ack_chunk, decision.recipe
     assert_equal :transmission_reading, decision.next_state.status
+    assert_recipe_progress_notification decision
     assert_equal 3, decision.instructions.size
   end
 
@@ -126,7 +145,8 @@ class RulesDecideTest < Minitest::Test
     assert_equal :response_cat2, decision.shape
     assert_equal :enter_recovery, decision.recipe
     assert_equal :recovery, decision.next_state.status
-    assert_instance_of Instruction::SendQuery, decision.instructions.first
+    assert_recipe_progress_notification decision
+    assert_instance_of Instruction::SendQuery, decision.instructions[1]
   end
 
   def test_row_finalizing_sending_upload_response_final
@@ -140,6 +160,7 @@ class RulesDecideTest < Minitest::Test
     assert_equal :response_final, decision.shape
     assert_equal :complete_upload_with_data, decision.recipe
     assert_equal :success, decision.next_state.status
+    assert_recipe_progress_notification decision
     assert_equal 2, decision.instructions.size
   end
 
@@ -150,7 +171,8 @@ class RulesDecideTest < Minitest::Test
     assert_equal :response_final, decision.shape
     assert_equal :complete_upload_finalized, decision.recipe
     assert_equal :success, decision.next_state.status
-    assert_instance_of Instruction::TerminateSuccess, decision.instructions.first
+    assert_recipe_progress_notification decision
+    assert_instance_of Instruction::TerminateSuccess, decision.instructions[1]
   end
 
   def test_row_recovery_response_active
@@ -163,7 +185,8 @@ class RulesDecideTest < Minitest::Test
     assert_equal :response_active, decision.shape
     assert_equal :realign_from_recovery, decision.recipe
     assert_equal :transmission_reading, decision.next_state.status
-    assert_instance_of Instruction::RealignBuffer, decision.instructions.first
+    assert_recipe_progress_notification decision
+    assert_instance_of Instruction::RealignBuffer, decision.instructions[1]
   end
 
   def test_row_recovery_response_cat2
@@ -173,6 +196,7 @@ class RulesDecideTest < Minitest::Test
     assert_equal :response_cat2, decision.shape
     assert_equal :retry_recovery, decision.recipe
     assert_equal :recovery, decision.next_state.status
+    assert_recipe_progress_notification decision
     assert_instance_of Instruction::SendQuery, decision.instructions.first
   end
 
@@ -183,6 +207,7 @@ class RulesDecideTest < Minitest::Test
     assert_equal :response_cancelled, decision.shape
     assert_equal :complete_cancellation, decision.recipe
     assert_equal :cancelled, decision.next_state.status
+    assert_recipe_progress_notification decision
     assert_instance_of Instruction::TerminateFailure, decision.instructions.first
   end
 
@@ -192,6 +217,7 @@ class RulesDecideTest < Minitest::Test
     assert_equal :user_cancel, decision.shape
     assert_equal :ignore_duplicate_cancel, decision.recipe
     assert_equal :cancelling, decision.next_state.status
+    assert_recipe_progress_notification decision
     assert_empty decision.instructions
   end
 
@@ -201,6 +227,7 @@ class RulesDecideTest < Minitest::Test
     assert_equal :global_deadline_exceeded, decision.shape
     assert_equal :fail_with_deadline_exceeded, decision.recipe
     assert_equal :error, decision.next_state.status
+    assert_recipe_progress_notification decision
     assert_instance_of Gapic::Common::DeadlineExceededError, decision.next_state.last_error
   end
 
@@ -210,7 +237,8 @@ class RulesDecideTest < Minitest::Test
     assert_equal :user_cancel, decision.shape
     assert_equal :cancel_session, decision.recipe
     assert_equal :cancelling, decision.next_state.status
-    assert_instance_of Instruction::SendCancel, decision.instructions.first
+    assert_recipe_progress_notification decision
+    assert_instance_of Instruction::SendCancel, decision.instructions[1]
   end
 
   def test_row_response_rejected
@@ -220,6 +248,7 @@ class RulesDecideTest < Minitest::Test
     assert_equal :response_rejected, decision.shape
     assert_equal :fail_with_rejected, decision.recipe
     assert_equal :rejected, decision.next_state.status
+    assert_recipe_progress_notification decision
     assert_instance_of Gapic::Common::UploadRejectedError, decision.next_state.last_error
   end
 
@@ -230,6 +259,7 @@ class RulesDecideTest < Minitest::Test
     assert_equal :response_cat2, decision.shape
     assert_equal :fail_with_bad_response, decision.recipe
     assert_equal :error, decision.next_state.status
+    assert_recipe_progress_notification decision
     assert_instance_of Gapic::Common::BadResponseError, decision.next_state.last_error
   end
 
@@ -240,6 +270,24 @@ class RulesDecideTest < Minitest::Test
     assert_equal :request_retries_exhausted, decision.shape
     assert_equal :fail_with_request_error, decision.recipe
     assert_equal :error, decision.next_state.status
+    assert_recipe_progress_notification decision
     assert_instance_of Instruction::TerminateFailure, decision.instructions.first
+  end
+
+  private
+
+  def assert_recipe_progress_notification decision
+    if Rules::RECIPE_PHASES.key? decision.recipe
+      expected_phase = Rules::RECIPE_PHASES[decision.recipe]
+      first_inst = decision.instructions.first
+      assert_instance_of Instruction::NotifyProgress, first_inst,
+                         "Expected #{decision.recipe} to emit NotifyProgress as first instruction"
+      assert_equal expected_phase, first_inst.progress.phase,
+                   "Expected #{decision.recipe} to emit phase #{expected_phase}"
+    else
+      assert_includes Rules::NON_NOTIFYING_RECIPES, decision.recipe
+      refute decision.instructions.any? { |i| i.is_a? Instruction::NotifyProgress },
+             "Expected non-notifying recipe #{decision.recipe} to emit no NotifyProgress"
+    end
   end
 end

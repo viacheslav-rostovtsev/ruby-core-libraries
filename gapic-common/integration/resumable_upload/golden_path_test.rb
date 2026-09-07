@@ -43,9 +43,12 @@ class GoldenPathTest < ShowcaseIntegrationTest
 
     assert_equal size, parsed["size"]
     assert_equal [
-      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 524_288, total_bytes: 1_500_000),
-      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 1_048_576, total_bytes: 1_500_000),
-      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 1_500_000, total_bytes: 1_500_000)
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :initiating, bytes_uploaded: 0, total_bytes: 1_500_000),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :uploading, bytes_uploaded: 0, total_bytes: 1_500_000),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :uploading, bytes_uploaded: 524_288, total_bytes: 1_500_000),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :uploading, bytes_uploaded: 1_048_576, total_bytes: 1_500_000),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :finalizing, bytes_uploaded: 1_048_576, total_bytes: 1_500_000),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :completed, bytes_uploaded: 1_500_000, total_bytes: 1_500_000)
     ], progress_records
   end
 
@@ -68,7 +71,10 @@ class GoldenPathTest < ShowcaseIntegrationTest
 
     assert_equal size, parsed["size"]
     assert_equal [
-      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: size, total_bytes: size)
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :initiating, bytes_uploaded: 0, total_bytes: size),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :uploading, bytes_uploaded: 0, total_bytes: size),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :finalizing, bytes_uploaded: 0, total_bytes: size),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :completed, bytes_uploaded: size, total_bytes: size)
     ], progress_records
   end
 
@@ -92,9 +98,13 @@ class GoldenPathTest < ShowcaseIntegrationTest
 
     assert_equal size, parsed["size"]
     assert_equal [
-      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 262_144, total_bytes: nil),
-      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 524_288, total_bytes: nil),
-      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 786_432, total_bytes: nil)
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :initiating, bytes_uploaded: 0, total_bytes: nil),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :uploading, bytes_uploaded: 0, total_bytes: nil),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :uploading, bytes_uploaded: 262_144, total_bytes: nil),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :uploading, bytes_uploaded: 524_288, total_bytes: nil),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :uploading, bytes_uploaded: 786_432, total_bytes: nil),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :finalizing, bytes_uploaded: 786_432, total_bytes: nil),
+      Gapic::Rest::ResumableUpload::Progress.new(phase: :completed, bytes_uploaded: 786_432, total_bytes: 786_432)
     ], progress_records
   end
 end

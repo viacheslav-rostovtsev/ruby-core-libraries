@@ -73,6 +73,37 @@ module Gapic
         ].freeze
 
         ##
+        # Mapping of notifying recipes to their emitted {Progress} phase.
+        #
+        RECIPE_PHASES = {
+          start_session:             :initiating,
+          begin_transmission:        :uploading,
+          ack_chunk:                 :uploading,
+          realign_from_recovery:     :uploading,
+          enter_recovery:            :recovering,
+          send_upload_finalize:      :finalizing,
+          send_finalize:             :finalizing,
+          complete_upload_with_data: :completed,
+          complete_upload_finalized: :completed,
+          cancel_session:            :cancelling
+        }.freeze
+
+        ##
+        # Recipes that do not emit {Instruction::NotifyProgress}.
+        #
+        NON_NOTIFYING_RECIPES = [
+          :send_chunk,
+          :retry_recovery,
+          :complete_cancellation,
+          :ignore_duplicate_cancel,
+          :fail_with_deadline_exceeded,
+          :fail_with_rejected,
+          :fail_with_bad_response,
+          :fail_with_request_error,
+          :fail_with_unmatched_transition
+        ].freeze
+
+        ##
         # Classifies incoming event into a canonical shape symbol.
         #
         # @param event [Object] Input event
@@ -185,7 +216,9 @@ module Gapic
 
         def self.start_session state, _event, config
           next_state = state.with status: :starting
+          progress = Progress.new phase: :initiating, bytes_uploaded: next_state.offset, total_bytes: config.upload_size
           instructions = [
+            Instruction::NotifyProgress.new(progress: progress),
             Instruction::SendStart.new(
               url:     config.initial_url,
               headers: config.initial_headers,
@@ -208,7 +241,12 @@ module Gapic
             offset:            0,
             in_flight_length:  0
           )
-          [next_state, [Instruction::FillBuffer.new(target_bytesize: chunk_size)]]
+          progress = Progress.new phase: :uploading, bytes_uploaded: next_state.offset, total_bytes: config.upload_size
+          instructions = [
+            Instruction::NotifyProgress.new(progress: progress),
+            Instruction::FillBuffer.new(target_bytesize: chunk_size)
+          ]
+          [next_state, instructions]
         end
 
         def self.send_chunk state, event, _config
@@ -227,12 +265,14 @@ module Gapic
           [next_state, instructions]
         end
 
-        def self.send_upload_finalize state, event, _config
+        def self.send_upload_finalize state, event, config
           next_state = state.with(
             status:           :finalizing_sending_upload,
             in_flight_length: event.bytes_buffered
           )
+          progress = Progress.new phase: :finalizing, bytes_uploaded: next_state.offset, total_bytes: config.upload_size
           instructions = [
+            Instruction::NotifyProgress.new(progress: progress),
             Instruction::SendChunk.new(
               url:      state.upload_url,
               offset:   state.offset,
@@ -243,12 +283,17 @@ module Gapic
           [next_state, instructions]
         end
 
-        def self.send_finalize state, _event, _config
+        def self.send_finalize state, _event, config
           next_state = state.with(
             status:           :finalizing_sending_finalize,
             in_flight_length: 0
           )
-          [next_state, [Instruction::SendFinalize.new(url: state.upload_url)]]
+          progress = Progress.new phase: :finalizing, bytes_uploaded: next_state.offset, total_bytes: config.upload_size
+          instructions = [
+            Instruction::NotifyProgress.new(progress: progress),
+            Instruction::SendFinalize.new(url: state.upload_url)
+          ]
+          [next_state, instructions]
         end
 
         def self.ack_chunk state, _event, config
@@ -258,7 +303,7 @@ module Gapic
             offset:           new_offset,
             in_flight_length: 0
           )
-          progress = Progress.new bytes_uploaded: new_offset, total_bytes: config.upload_size
+          progress = Progress.new phase: :uploading, bytes_uploaded: new_offset, total_bytes: config.upload_size
           instructions = [
             Instruction::NotifyProgress.new(progress: progress),
             Instruction::RealignBuffer.new(server_offset: new_offset),
@@ -267,12 +312,17 @@ module Gapic
           [next_state, instructions]
         end
 
-        def self.enter_recovery state, _event, _config
+        def self.enter_recovery state, _event, config
           next_state = state.with(
             status:           :recovery,
             in_flight_length: 0
           )
-          [next_state, [Instruction::SendQuery.new(url: state.upload_url)]]
+          progress = Progress.new phase: :recovering, bytes_uploaded: next_state.offset, total_bytes: config.upload_size
+          instructions = [
+            Instruction::NotifyProgress.new(progress: progress),
+            Instruction::SendQuery.new(url: state.upload_url)
+          ]
+          [next_state, instructions]
         end
 
         def self.retry_recovery state, _event, _config
@@ -290,7 +340,7 @@ module Gapic
             offset:           new_offset,
             in_flight_length: 0
           )
-          progress = Progress.new bytes_uploaded: new_offset, total_bytes: new_offset
+          progress = Progress.new phase: :completed, bytes_uploaded: new_offset, total_bytes: new_offset
           instructions = [
             Instruction::NotifyProgress.new(progress: progress),
             Instruction::TerminateSuccess.new(response: event)
@@ -303,10 +353,15 @@ module Gapic
             status:           :success,
             in_flight_length: 0
           )
-          [next_state, [Instruction::TerminateSuccess.new(response: event)]]
+          progress = Progress.new phase: :completed, bytes_uploaded: next_state.offset, total_bytes: next_state.offset
+          instructions = [
+            Instruction::NotifyProgress.new(progress: progress),
+            Instruction::TerminateSuccess.new(response: event)
+          ]
+          [next_state, instructions]
         end
 
-        def self.realign_from_recovery state, event, _config
+        def self.realign_from_recovery state, event, config
           server_offset_str = header_value event.headers, "x-goog-upload-size-received"
           server_offset = server_offset_str.to_i
           next_state = state.with(
@@ -314,7 +369,9 @@ module Gapic
             offset:           server_offset,
             in_flight_length: 0
           )
+          progress = Progress.new phase: :uploading, bytes_uploaded: server_offset, total_bytes: config.upload_size
           instructions = [
+            Instruction::NotifyProgress.new(progress: progress),
             Instruction::RealignBuffer.new(server_offset: server_offset),
             Instruction::FillBuffer.new(target_bytesize: state.chunk_size)
           ]
@@ -331,9 +388,14 @@ module Gapic
           [state, []]
         end
 
-        def self.cancel_session state, _event, _config
+        def self.cancel_session state, _event, config
           next_state = state.with status: :cancelling
-          [next_state, [Instruction::SendCancel.new(url: state.upload_url)]]
+          progress = Progress.new phase: :cancelling, bytes_uploaded: next_state.offset, total_bytes: config.upload_size
+          instructions = [
+            Instruction::NotifyProgress.new(progress: progress),
+            Instruction::SendCancel.new(url: state.upload_url)
+          ]
+          [next_state, instructions]
         end
 
         def self.fail_with_deadline_exceeded state, _event, _config

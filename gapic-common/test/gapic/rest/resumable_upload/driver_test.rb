@@ -44,12 +44,14 @@ class DriverTest < Minitest::Test
   end
 
   def test_multi_chunk_upload_with_active_responses
+    progress_records = []
     stub = FakeClientStub.new build_scripted_responses
     config = CompleteUploadConfig.new(
       initial_url: "https://example.com/upload",
       stream:      StringIO.new("0123456789"),
       upload_size: 10,
-      chunk_size:  4
+      chunk_size:  4,
+      on_progress: ->(p) { progress_records << p }
     )
 
     driver = Driver.new client_stub: stub, config: config
@@ -61,16 +63,27 @@ class DriverTest < Minitest::Test
     assert_chunk_request stub.requests[1], offset: "0", length: "4", body: "0123", finalize: false
     assert_chunk_request stub.requests[2], offset: "4", length: "4", body: "4567", finalize: false
     assert_chunk_request stub.requests[3], offset: "8", length: "2", body: "89", finalize: true
+
+    assert_equal [
+      Progress.new(phase: :initiating, bytes_uploaded: 0, total_bytes: 10),
+      Progress.new(phase: :uploading, bytes_uploaded: 0, total_bytes: 10),
+      Progress.new(phase: :uploading, bytes_uploaded: 4, total_bytes: 10),
+      Progress.new(phase: :uploading, bytes_uploaded: 8, total_bytes: 10),
+      Progress.new(phase: :finalizing, bytes_uploaded: 8, total_bytes: 10),
+      Progress.new(phase: :completed, bytes_uploaded: 10, total_bytes: 10)
+    ], progress_records
   end
 
   def test_upload_recovers_when_chunk_response_lacks_status_header
+    progress_records = []
     responses = build_recovery_responses
     stub = FakeClientStub.new responses
     config = CompleteUploadConfig.new(
       initial_url: "https://example.com/upload",
       stream:      StringIO.new("0123456789"),
       upload_size: 10,
-      chunk_size:  4
+      chunk_size:  4,
+      on_progress: ->(p) { progress_records << p }
     )
 
     driver = Driver.new client_stub: stub, config: config
@@ -83,6 +96,16 @@ class DriverTest < Minitest::Test
     assert_query_request stub.requests[2]
     assert_chunk_request stub.requests[3], offset: "4", length: "4", body: "4567", finalize: false
     assert_chunk_request stub.requests[4], offset: "8", length: "2", body: "89", finalize: true
+
+    assert_equal [
+      Progress.new(phase: :initiating, bytes_uploaded: 0, total_bytes: 10),
+      Progress.new(phase: :uploading, bytes_uploaded: 0, total_bytes: 10),
+      Progress.new(phase: :recovering, bytes_uploaded: 0, total_bytes: 10),
+      Progress.new(phase: :uploading, bytes_uploaded: 4, total_bytes: 10),
+      Progress.new(phase: :uploading, bytes_uploaded: 8, total_bytes: 10),
+      Progress.new(phase: :finalizing, bytes_uploaded: 8, total_bytes: 10),
+      Progress.new(phase: :completed, bytes_uploaded: 10, total_bytes: 10)
+    ], progress_records
   end
 
   private

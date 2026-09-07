@@ -46,8 +46,10 @@ class CoreTest < Minitest::Test
   def test_dispatch_updates_state_and_returns_instructions
     instructions = @core.dispatch Event::StartUpload.new
     assert_equal :starting, @core.state.status
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::SendStart, instructions.first
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal :initiating, instructions[0].progress.phase
+    assert_instance_of Instruction::SendStart, instructions[1]
     assert_instance_of Decision, @core.last_decision
     assert_equal :initializing, @core.last_decision.from_status
     assert_equal :start_upload, @core.last_decision.shape
@@ -68,9 +70,11 @@ class CoreTest < Minitest::Test
     assert_equal "https://example.com/session/1", @core.state.upload_url
     assert_equal 512, @core.state.chunk_granularity
     assert_equal 1024, @core.state.chunk_size
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::FillBuffer, instructions.first
-    assert_equal 1024, instructions.first.target_bytesize
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal :uploading, instructions[0].progress.phase
+    assert_instance_of Instruction::FillBuffer, instructions[1]
+    assert_equal 1024, instructions[1].target_bytesize
     assert_instance_of Decision, @core.last_decision
     assert_equal :starting, @core.last_decision.from_status
     assert_equal :response_active, @core.last_decision.shape

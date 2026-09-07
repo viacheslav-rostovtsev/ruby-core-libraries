@@ -57,7 +57,10 @@ class UploadLogTest < Minitest::Test
     assert_equal "starting", fields["toStatus"]
     assert_equal 0, fields["offset"]
     assert_equal 0, fields["inFlightLength"]
-    assert_equal [{ "type" => "SendStart", "url" => "https://example.com/upload" }], fields["instructions"]
+    assert_equal [
+      { "type" => "NotifyProgress", "phase" => "initiating", "bytesUploaded" => 0, "totalBytes" => 1024 },
+      { "type" => "SendStart", "url" => "https://example.com/upload" }
+    ], fields["instructions"]
   end
 
   def test_lifecycle_start_session_logs_info

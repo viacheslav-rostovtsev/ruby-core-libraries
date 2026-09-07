@@ -40,11 +40,13 @@ class RulesTest < Minitest::Test
     next_state, instructions = Rules.step state, Event::StartUpload.new, @config
 
     assert_equal :starting, next_state.status
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::SendStart, instructions.first
-    assert_equal "https://example.com/upload", instructions.first.url
-    assert_equal({ "X-Custom" => "value" }, instructions.first.headers)
-    assert_equal '{"name":"obj"}', instructions.first.body
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal Progress.new(phase: :initiating, bytes_uploaded: 0, total_bytes: 1024), instructions[0].progress
+    assert_instance_of Instruction::SendStart, instructions[1]
+    assert_equal "https://example.com/upload", instructions[1].url
+    assert_equal({ "X-Custom" => "value" }, instructions[1].headers)
+    assert_equal '{"name":"obj"}', instructions[1].body
   end
 
   def test_transition_starting_to_transmission_reading
@@ -63,9 +65,11 @@ class RulesTest < Minitest::Test
     assert_equal 512, next_state.chunk_size
     assert_equal 0, next_state.offset
     assert_equal 0, next_state.in_flight_length
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::FillBuffer, instructions.first
-    assert_equal 512, instructions.first.target_bytesize
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal Progress.new(phase: :uploading, bytes_uploaded: 0, total_bytes: 1024), instructions[0].progress
+    assert_instance_of Instruction::FillBuffer, instructions[1]
+    assert_equal 512, instructions[1].target_bytesize
   end
 
   def test_transition_transmission_reading_full_chunk
@@ -91,11 +95,13 @@ class RulesTest < Minitest::Test
 
     assert_equal :finalizing_sending_upload, next_state.status
     assert_equal 200, next_state.in_flight_length
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::SendChunk, instructions.first
-    assert_equal 512, instructions.first.offset
-    assert_equal 200, instructions.first.length
-    assert instructions.first.finalize
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal Progress.new(phase: :finalizing, bytes_uploaded: 512, total_bytes: 1024), instructions[0].progress
+    assert_instance_of Instruction::SendChunk, instructions[1]
+    assert_equal 512, instructions[1].offset
+    assert_equal 200, instructions[1].length
+    assert instructions[1].finalize
   end
 
   def test_transition_transmission_reading_eof_empty
@@ -106,9 +112,11 @@ class RulesTest < Minitest::Test
 
     assert_equal :finalizing_sending_finalize, next_state.status
     assert_equal 0, next_state.in_flight_length
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::SendFinalize, instructions.first
-    assert_equal "https://example.com/session", instructions.first.url
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal Progress.new(phase: :finalizing, bytes_uploaded: 1024, total_bytes: 1024), instructions[0].progress
+    assert_instance_of Instruction::SendFinalize, instructions[1]
+    assert_equal "https://example.com/session", instructions[1].url
   end
 
   def test_transition_transmission_sending_ack_chunk
@@ -122,7 +130,7 @@ class RulesTest < Minitest::Test
     assert_equal 0, next_state.in_flight_length
     assert_equal 3, instructions.size
     assert_instance_of Instruction::NotifyProgress, instructions[0]
-    assert_equal Progress.new(bytes_uploaded: 512, total_bytes: 1024), instructions[0].progress
+    assert_equal Progress.new(phase: :uploading, bytes_uploaded: 512, total_bytes: 1024), instructions[0].progress
     assert_instance_of Instruction::RealignBuffer, instructions[1]
     assert_equal 512, instructions[1].server_offset
     assert_instance_of Instruction::FillBuffer, instructions[2]
@@ -139,7 +147,7 @@ class RulesTest < Minitest::Test
     assert_equal 0, next_state.in_flight_length
     assert_equal 2, instructions.size
     assert_instance_of Instruction::NotifyProgress, instructions[0]
-    assert_equal Progress.new(bytes_uploaded: 1024, total_bytes: 1024), instructions[0].progress
+    assert_equal Progress.new(phase: :completed, bytes_uploaded: 1024, total_bytes: 1024), instructions[0].progress
     assert_instance_of Instruction::TerminateSuccess, instructions[1]
   end
 
@@ -149,8 +157,10 @@ class RulesTest < Minitest::Test
     next_state, instructions = Rules.step state, resp, @config
 
     assert_equal :success, next_state.status
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::TerminateSuccess, instructions.first
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal Progress.new(phase: :completed, bytes_uploaded: 1024, total_bytes: 1024), instructions[0].progress
+    assert_instance_of Instruction::TerminateSuccess, instructions[1]
   end
 
   def test_transition_cancellation_flow
@@ -158,8 +168,10 @@ class RulesTest < Minitest::Test
     next_state, instructions = Rules.step state, Event::Cancel.new, @config
 
     assert_equal :cancelling, next_state.status
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::SendCancel, instructions.first
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal Progress.new(phase: :cancelling, bytes_uploaded: 0, total_bytes: 1024), instructions[0].progress
+    assert_instance_of Instruction::SendCancel, instructions[1]
 
     # Duplicate cancel in cancelling state does nothing
     dup_state, dup_instructions = Rules.step next_state, Event::Cancel.new, @config

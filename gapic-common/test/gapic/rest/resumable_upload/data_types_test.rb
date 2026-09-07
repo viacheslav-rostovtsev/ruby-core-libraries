@@ -96,12 +96,24 @@ class DataTypesTest < Minitest::Test
   end
 
   def test_progress_instantiation
-    progress = Progress.new bytes_uploaded: 512, total_bytes: 2048
-    assert_equal 512, progress.bytes_uploaded
-    assert_equal 2048, progress.total_bytes
+    Progress::PHASES.each do |phase|
+      progress = Progress.new phase: phase, bytes_uploaded: 512, total_bytes: 2048
+      assert_equal phase, progress.phase
+      assert_equal 512, progress.bytes_uploaded
+      assert_equal 2048, progress.total_bytes
+    end
 
-    progress_unknown = Progress.new bytes_uploaded: 1024
+    progress_unknown = Progress.new phase: :uploading, bytes_uploaded: 1024
+    assert_equal :uploading, progress_unknown.phase
     assert_equal 1024, progress_unknown.bytes_uploaded
     assert_nil progress_unknown.total_bytes
+
+    assert_raises ArgumentError do
+      Progress.new bytes_uploaded: 512, total_bytes: 2048
+    end
+
+    assert_raises ArgumentError do
+      Progress.new phase: :invalid_phase, bytes_uploaded: 512, total_bytes: 2048
+    end
   end
 end

@@ -16,6 +16,7 @@
 
 module Gapic
   module Rest
+    # rubocop:disable Metrics/ModuleLength
     module ResumableUpload
       ##
       # Immutable configuration for initiating and executing a resumable upload session.
@@ -91,17 +92,29 @@ module Gapic
       ##
       # Immutable progress snapshot passed to the `on_progress` callback.
       #
+      # @!attribute [r] phase
+      #   @return [Symbol] Current upload phase, one of {PHASES}
       # @!attribute [r] bytes_uploaded
-      #   @return [Integer] Cumulative bytes acknowledged by the server
+      #   @return [Integer] Cumulative bytes acknowledged by the server. Note that this is the
+      #     server-confirmed offset and is not guaranteed to be monotonic — a server rewind during
+      #     recovery can decrease this value.
       # @!attribute [r] total_bytes
       #   @return [Integer, nil] Total upload size in bytes if known, or nil
       #
       Progress = Data.define(
+        :phase,
         :bytes_uploaded,
         :total_bytes
       ) do
-        def initialize bytes_uploaded:, total_bytes: nil
+        self::PHASES = [:initiating, :uploading, :recovering, :finalizing, :cancelling, :completed].freeze
+
+        def initialize phase:, bytes_uploaded:, total_bytes: nil
+          unless self.class::PHASES.include? phase
+            raise ArgumentError, "Invalid phase: #{phase.inspect}. Expected one of #{self.class::PHASES.inspect}"
+          end
+
           super(
+            phase:          phase,
             bytes_uploaded: bytes_uploaded,
             total_bytes:    total_bytes
           )
@@ -171,5 +184,6 @@ module Gapic
         end
       end
     end
+    # rubocop:enable Metrics/ModuleLength
   end
 end

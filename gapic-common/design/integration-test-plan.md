@@ -68,10 +68,13 @@ Tests standard, uninterrupted resumable upload workflows against `gapic-showcase
   4. Chunk 3 transmits remaining bytes `1048576..1499999` with `upload, finalize`.
 * **Assertions**:
   * Returned JSON body parses cleanly and reports `"size" == 1_500_000`.
-  * `progress_records` contains exactly 3 `Progress` notifications matching cumulative byte offsets:
-    * `Progress(bytes_uploaded: 524_288, total_bytes: 1_500_000)`
-    * `Progress(bytes_uploaded: 1_048_576, total_bytes: 1_500_000)`
-    * `Progress(bytes_uploaded: 1_500_000, total_bytes: 1_500_000)`
+  * `progress_records` contains 6 `Progress` notifications across lifecycle phases:
+    * `Progress(phase: :initiating, bytes_uploaded: 0, total_bytes: 1_500_000)`
+    * `Progress(phase: :uploading, bytes_uploaded: 0, total_bytes: 1_500_000)`
+    * `Progress(phase: :uploading, bytes_uploaded: 524_288, total_bytes: 1_500_000)`
+    * `Progress(phase: :uploading, bytes_uploaded: 1_048_576, total_bytes: 1_500_000)`
+    * `Progress(phase: :finalizing, bytes_uploaded: 1_048_576, total_bytes: 1_500_000)`
+    * `Progress(phase: :completed, bytes_uploaded: 1_500_000, total_bytes: 1_500_000)`
 
 #### Case 2. Default chunk size on small upload (`test_small_upload_default_chunk_size`)
 * **Scenario**: Uploads a ~100 KB (`100_000` bytes) payload with `upload_size: 100_000` and no `chunk_size` specified.
@@ -80,8 +83,11 @@ Tests standard, uninterrupted resumable upload workflows against `gapic-showcase
   2. The entire 100,000-byte payload fits within a single buffer read and is transmitted in one `upload, finalize` request.
 * **Assertions**:
   * Returned JSON body reports `"size" == 100_000`.
-  * `progress_records` contains exactly 1 `Progress` notification:
-    * `Progress(bytes_uploaded: 100_000, total_bytes: 100_000)`
+  * `progress_records` contains 4 `Progress` notifications:
+    * `Progress(phase: :initiating, bytes_uploaded: 0, total_bytes: 100_000)`
+    * `Progress(phase: :uploading, bytes_uploaded: 0, total_bytes: 100_000)`
+    * `Progress(phase: :finalizing, bytes_uploaded: 0, total_bytes: 100_000)`
+    * `Progress(phase: :completed, bytes_uploaded: 100_000, total_bytes: 100_000)`
 
 #### Case 3. Standalone finalize on unseekable stream (`test_standalone_finalize_unseekable_stream`)
 * **Scenario**: Uploads a `786_432`-byte payload (`3 * 262_144` bytes) wrapped in an `UnseekableStream`, with `chunk_size: 262_144` (256 KiB) and `upload_size` omitted (`nil`).
@@ -97,7 +103,11 @@ Tests standard, uninterrupted resumable upload workflows against `gapic-showcase
   5. Next buffer read returns 0 bytes at EOF (`:chunk_read_eof_empty`), emitting `SendFinalize` to send a standalone `finalize` request at offset `786432`.
 * **Assertions**:
   * Returned JSON body reports `"size" == 786_432`.
-  * `progress_records` contains 3 `Progress` notifications with `total_bytes: nil`:
-    * `Progress(bytes_uploaded: 262_144, total_bytes: nil)`
-    * `Progress(bytes_uploaded: 524_288, total_bytes: nil)`
-    * `Progress(bytes_uploaded: 786_432, total_bytes: nil)`
+  * `progress_records` contains 7 `Progress` notifications:
+    * `Progress(phase: :initiating, bytes_uploaded: 0, total_bytes: nil)`
+    * `Progress(phase: :uploading, bytes_uploaded: 0, total_bytes: nil)`
+    * `Progress(phase: :uploading, bytes_uploaded: 262_144, total_bytes: nil)`
+    * `Progress(phase: :uploading, bytes_uploaded: 524_288, total_bytes: nil)`
+    * `Progress(phase: :uploading, bytes_uploaded: 786_432, total_bytes: nil)`
+    * `Progress(phase: :finalizing, bytes_uploaded: 786_432, total_bytes: nil)`
+    * `Progress(phase: :completed, bytes_uploaded: 786_432, total_bytes: 786_432)`

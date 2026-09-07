@@ -106,6 +106,7 @@ module Gapic
             when Instruction::NotifyProgress
               {
                 "type"          => "NotifyProgress",
+                "phase"         => instruction.progress.phase.to_s,
                 "bytesUploaded" => instruction.progress.bytes_uploaded,
                 "totalBytes"    => instruction.progress.total_bytes
               }

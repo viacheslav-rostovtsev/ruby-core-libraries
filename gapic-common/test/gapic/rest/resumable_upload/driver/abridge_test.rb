@@ -78,7 +78,8 @@ class AbridgeTest < Minitest::Test
   def test_instructions_summarizes_without_bodies
     instructions = [
       Instruction::SendStart.new(url: "https://example.com/upload?key=SECRET", headers: {}, body: "secret_body"),
-      Instruction::SendChunk.new(url: "https://example.com/session?id=123", offset: 0, length: 64, finalize: true)
+      Instruction::SendChunk.new(url: "https://example.com/session?id=123", offset: 0, length: 64, finalize: true),
+      Instruction::NotifyProgress.new(progress: Progress.new(phase: :uploading, bytes_uploaded: 64, total_bytes: 1024))
     ]
 
     summary = Driver::Abridge.instructions instructions
@@ -91,5 +92,10 @@ class AbridgeTest < Minitest::Test
     assert_equal 0, summary[1]["offset"]
     assert_equal 64, summary[1]["length"]
     assert_equal true, summary[1]["finalize"]
+
+    assert_equal "NotifyProgress", summary[2]["type"]
+    assert_equal "uploading", summary[2]["phase"]
+    assert_equal 64, summary[2]["bytesUploaded"]
+    assert_equal 1024, summary[2]["totalBytes"]
   end
 end

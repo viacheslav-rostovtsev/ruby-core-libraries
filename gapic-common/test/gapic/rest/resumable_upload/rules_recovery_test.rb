@@ -43,8 +43,10 @@ class RulesRecoveryTest < Minitest::Test
 
     assert_equal :recovery, next_state.status
     assert_equal 0, next_state.in_flight_length
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::SendQuery, instructions.first
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal Progress.new(phase: :recovering, bytes_uploaded: 0, total_bytes: 1024), instructions[0].progress
+    assert_instance_of Instruction::SendQuery, instructions[1]
   end
 
   def test_transition_transmission_sending_connection_failed_triggers_recovery
@@ -55,8 +57,10 @@ class RulesRecoveryTest < Minitest::Test
 
     assert_equal :recovery, next_state.status
     assert_equal 0, next_state.in_flight_length
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::SendQuery, instructions.first
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal Progress.new(phase: :recovering, bytes_uploaded: 0, total_bytes: 1024), instructions[0].progress
+    assert_instance_of Instruction::SendQuery, instructions[1]
   end
 
   def test_transition_transmission_sending_timeout_triggers_recovery
@@ -67,8 +71,10 @@ class RulesRecoveryTest < Minitest::Test
 
     assert_equal :recovery, next_state.status
     assert_equal 0, next_state.in_flight_length
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::SendQuery, instructions.first
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal Progress.new(phase: :recovering, bytes_uploaded: 0, total_bytes: 1024), instructions[0].progress
+    assert_instance_of Instruction::SendQuery, instructions[1]
   end
 
   def test_transition_finalizing_sending_upload_timeout_triggers_recovery
@@ -79,8 +85,10 @@ class RulesRecoveryTest < Minitest::Test
 
     assert_equal :recovery, next_state.status
     assert_equal 0, next_state.in_flight_length
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::SendQuery, instructions.first
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal Progress.new(phase: :recovering, bytes_uploaded: 512, total_bytes: 1024), instructions[0].progress
+    assert_instance_of Instruction::SendQuery, instructions[1]
   end
 
   def test_transition_recovery_active_realigns_buffer
@@ -94,10 +102,12 @@ class RulesRecoveryTest < Minitest::Test
 
     assert_equal :transmission_reading, next_state.status
     assert_equal 768, next_state.offset
-    assert_equal 2, instructions.size
-    assert_instance_of Instruction::RealignBuffer, instructions[0]
-    assert_equal 768, instructions[0].server_offset
-    assert_instance_of Instruction::FillBuffer, instructions[1]
+    assert_equal 3, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal Progress.new(phase: :uploading, bytes_uploaded: 768, total_bytes: 1024), instructions[0].progress
+    assert_instance_of Instruction::RealignBuffer, instructions[1]
+    assert_equal 768, instructions[1].server_offset
+    assert_instance_of Instruction::FillBuffer, instructions[2]
   end
 
   def test_transition_recovery_final_completes_upload
@@ -106,8 +116,10 @@ class RulesRecoveryTest < Minitest::Test
     next_state, instructions = Rules.step state, resp, @config
 
     assert_equal :success, next_state.status
-    assert_equal 1, instructions.size
-    assert_instance_of Instruction::TerminateSuccess, instructions.first
+    assert_equal 2, instructions.size
+    assert_instance_of Instruction::NotifyProgress, instructions[0]
+    assert_equal Progress.new(phase: :completed, bytes_uploaded: 512, total_bytes: 512), instructions[0].progress
+    assert_instance_of Instruction::TerminateSuccess, instructions[1]
   end
 
   def test_transition_recovery_cat2_retries_query
