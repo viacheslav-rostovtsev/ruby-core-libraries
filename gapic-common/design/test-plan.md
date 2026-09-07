@@ -20,6 +20,9 @@ flowchart TD
         DT["driver_test.rb<br/>(Driver Upload Execution Loop)"]
         DR["driver_retry_test.rb<br/>(Driver Initiation & Query Retries)"]
         DC["driver_config_test.rb<br/>(Driver Configuration & Deadlines)"]
+        AB["driver/abridge_test.rb<br/>(Payload & Header Redaction)"]
+        UL["driver/upload_log_test.rb<br/>(UploadLog Structured Entries)"]
+        DL["driver_logging_test.rb<br/>(Driver Logging & Corpus Invariants)"]
     end
 
     subgraph SUT["Systems Under Test"]
@@ -32,6 +35,7 @@ flowchart TD
         DriverRun["Driver#run<br/>Driver#execute_send_chunk"]
         DriverRetry["Driver#execute_send_start<br/>Driver#execute_send_query"]
         DriverConfig["Driver#resolve_timeout<br/>Driver#deadline_exceeded?"]
+        DriverLog["Driver::Abridge<br/>Driver::UploadLog<br/>Driver#run Logging"]
     end
 
     RC --> RulesClassify
@@ -45,6 +49,9 @@ flowchart TD
     DT --> DriverRun
     DR --> DriverRetry
     DC --> DriverConfig
+    AB --> DriverLog
+    UL --> DriverLog
+    DL --> DriverLog
 ```
 
 ---
@@ -57,6 +64,8 @@ flowchart TD
 | `UnseekableStream` | `driver_buffer_test.rb` | Wraps `StringIO` with `#read` but explicitly omits `#seek` (`respond_to?(:seek)` is `false`). |
 | `FailingClientStub` | `driver_error_mapping_test.rb` | Integration fake client stub configured with `@error_to_raise` to verify exception rescue in `Driver#make_post_request`. |
 | `ScriptedClientStub` | `driver_progress_test.rb` / `driver_test.rb` | Yields a deterministic sequence of HTTP response structs and records dispatched requests. |
+| `RecordingLogger` | `test_helper.rb` | Real `Logger` at `DEBUG` level whose formatter appends every emitted `Google::Logging::Message` and severity to an in-memory array. Ensures log blocks execute completely rather than being stubbed out (catching any exceptions inside log blocks that `StubLogger#log` would otherwise rescue). |
+| `FakeStub` | `driver_logging_test.rb` | Returns scripted HTTP responses and records `method_name` arguments passed to `make_post_request`. |
 
 ---
 
@@ -220,3 +229,59 @@ flowchart TD
 * **Default base timeout when size is nil**: Unspecified `upload_size` defaults to `BASE_TIMEOUT`.
 * **Deadline expiration enforcement**: Monotonic clock exceeding `@deadline` during `Driver#run` triggers `Event::GlobalDeadlineExceeded` and raises `Gapic::Common::DeadlineExceededError`.
 
+---
+
+### 3.10 Payload & Header Abridgement (`driver/abridge_test.rb`)
+
+* **Binary payload hex encoding & abridgement (`Driver::Abridge.bytes`)**:
+  * `nil` returns `nil`; short payloads (< 64 bytes, including 63-byte boundary) are full-hex-encoded via `unpack1("H*")`.
+  * Payloads $\ge 64$ bytes are abridged to the first 32 bytes in hex followed by total byte size (`"<32-byte hex>... <100 bytes>"`).
+* **Error body sanitization (`Driver::Abridge.error_body`)**:
+  * Truncates error response strings to at most 512 bytes.
+  * Forces UTF-8 encoding and scrubs invalid byte sequences (`\xFF\xFE`) so malformed error payloads never raise encoding errors during log serialization.
+* **URL query parameter elision (`Driver::Abridge.url`)**:
+  * Parses URIs and replaces every query parameter value with `<...>` (`uploadType=<...>&sid=<...>`) so capability session IDs never leak into logs.
+* **Header allowlisting (`Driver::Abridge.headers`)**:
+  * Preserves values for headers prefixed with `x-goog-upload-` (case-insensitive) and abridges URLs in `x-goog-upload-url`.
+  * Redacts all other headers (`Authorization`, `Content-Type`, custom metadata) to `"<...>"`.
+* **Instruction summarization (`Driver::Abridge.instructions`)**:
+  * Summarizes emitted instruction structs (`SendStart`, `SendChunk`) into hashes with abridged URLs and metadata while omitting raw request body payloads.
+
+---
+
+### 3.11 Structured Upload Log Helper (`driver/upload_log_test.rb`)
+
+* **Bijective recipe coverage (`test_lifecycle_table_matches_rules_recipes`)**:
+  * Verifies that `UploadLog::LIFECYCLE.keys + UploadLog::SILENT_RECIPES` equals `Rules::RECIPES` with zero unmapped recipes and zero overlap between active and silent lists.
+* **State machine decision logging (`UploadLog#decision`)**:
+  * Emits `DEBUG` entries containing `uploadId`, `fromStatus`, `shape`, `recipe`, `toStatus`, `offset`, `inFlightLength`, and abridged `instructions`.
+* **Lifecycle milestone logging (`UploadLog#lifecycle`)**:
+  * Emits `INFO` entries for session milestones (`:start_session` with `uploadSize` and `requestedChunkSize`), `DEBUG` for per-chunk transmission (`:send_chunk`), and `WARN` for terminal failures (`:fail_with_rejected` with `error` field).
+  * Asserts silent recipes (`:ignore_duplicate_cancel`, `:ack_chunk`) emit no lifecycle log entries.
+* **Wire trace logging (`wire_send`, `wire_receive`, `wire_failure`)**:
+  * `wire_send` logs `DEBUG` with HTTP verb, abridged URL, redacted headers, `startAttempt`, `bodySize`, and hex-encoded/abridged body.
+  * `wire_receive` logs `DEBUG` with HTTP status code, parsed `uploadStatus`, `sizeReceived`, `granularity`, and hex body.
+  * `wire_failure` logs `DEBUG` with failure classification `kind` and exception message.
+* **Buffer realignment logging (`UploadLog#buffer_realign`)**:
+  * Logs `DEBUG` on normal realignment and additionally emits a `WARN` entry (`"Server offset rewind on unseekable stream"`) with `action`, `serverOffset`, and `currentOffset` when rewinding an unseekable stream.
+* **Unmatched state transition logging (`UploadLog#unmatched_transition`)**:
+  * Emits a `WARN` entry capturing current `status`, event `shape`, and exception `error` message before `InvalidTransitionError` propagates.
+
+---
+
+### 3.12 End-to-End Driver Logging & Corpus Invariants (`driver_logging_test.rb`)
+
+* **Shared session correlation & RPC method names (`test_all_entries_share_upload_id_and_pass_method_names`)**:
+  * Verifies every log entry emitted during `Driver#run` shares a single non-nil UUIDv4 `uploadId`.
+  * Verifies `Driver` passes explicit `method_name` strings (`"ResumableUpload.start"`, `"ResumableUpload.upload"`) to `ClientStub#make_post_request`.
+* **Multi-chunk upload lifecycle (`test_multi_chunk_upload_logs_lifecycle_entries`)**:
+  * Confirms multi-chunk upload emits `INFO` lifecycle entries for `start_session`, `begin_transmission`, and completion while suppressing per-chunk `ack_chunk` at `INFO`.
+* **Protocol recovery logging (`test_recovery_scenario_logs_enter_recovery_and_realign`)**:
+  * Simulates HTTP 503 during chunk upload followed by recovery query; asserts `INFO` logs include both `enter_recovery` and `realign_from_recovery`.
+* **Terminal failure & unmatched transition logging (`test_fatal_failure_logs_warn_with_fail_with_recipe`, `test_unmatched_transition_logs_warn_and_reraises`)**:
+  * Confirms fatal HTTP 403 rejection emits `WARN` with a `fail_with_*` recipe, and unexpected Core state transitions emit `WARN` prior to raising `InvalidTransitionError`.
+* **End-to-end secret redaction (`test_full_log_corpus_redacts_secrets`)**:
+  * Executes a 16 MiB two-chunk upload containing a sentinel secret (`"SECRET-123456"`) in the stream payload, session query URL (`sid=SECRET-123456`), initiation query token (`token=SECRET-123456`), and `Authorization: Bearer SECRET-123456` header.
+  * Asserts the sentinel string is completely absent across the entire serialized log corpus.
+* **Bounded log corpus size (`test_full_log_corpus_size_under_64kib`)**:
+  * Asserts that the total serialized byte size of all log entries emitted across a 16 MiB multi-chunk upload run is strictly under 64 KiB (65,536 bytes).

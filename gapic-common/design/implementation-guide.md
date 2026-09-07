@@ -473,26 +473,30 @@ All log entries emitted by `UploadLog` populate structured fields in `Google::Lo
     *   `effectiveChunkSize`: Negotiated chunk size aligned to server granularity (on `:begin_transmission`).
     *   `granularity`: Server chunk alignment modulus from `X-Goog-Upload-Chunk-Granularity` (on `:begin_transmission`).
     *   `uploadUrl`: Abridged session upload URL (on `:begin_transmission` and `:cancel_session`).
-    *   `error`: Terminal exception message string (on `fail_with_*` and `unmatched_transition`).
+    *   `status`: Current protocol status symbol (on `unmatched_transition`).
+    *   `error`: Exception message string (on `fail_with_*` and `unmatched_transition`).
 *   **Wire & Transport Fields**:
-    *   `method`: HTTP verb (`:post`, `:put`, etc.).
+    *   `method`: Always the string `"POST"`.
     *   `url`: Abridged request target URI.
     *   `headers`: Redacted HTTP header hash.
     *   `startAttempt`: Retry attempt counter (`Integer`).
-    *   `command`: Value of `X-Goog-Upload-Command` header.
+    *   `command`: Value of `X-Goog-Upload-Command` request header.
+    *   `offset`: Parsed integer value of `X-Goog-Upload-Offset` request header (`wire_send`).
     *   `bodySize`: Total byte length of request payload (`Integer`).
     *   `body`: Abridged payload or error body snippet.
-    *   `status`: HTTP response status code (`Integer`).
+    *   `status`: HTTP response status code (`Integer`, on `wire_receive`).
     *   `uploadStatus`: Value of `X-Goog-Upload-Status` response header.
     *   `sizeReceived`: Parsed integer value of `X-Goog-Upload-Size-Received` response header.
-    *   `kind`: Transport failure classification symbol (`:retries_exhausted`, `:connection_failed`, etc.).
+    *   `granularity`: Parsed integer value of `X-Goog-Upload-Chunk-Granularity` response header (`wire_receive`).
+    *   `kind`: Transport failure classification symbol (`:timeout`, `:connection_failed`, `:retries_exhausted`).
+    *   `error`: Exception message string (`wire_failure`).
 *   **Buffer Realignment Fields**:
-    *   `action`: Realignment strategy applied (`:keep_buffer`, `:discard_prefix`, `:seek_backward`, etc.).
+    *   `action`: Realignment strategy string (`"within_buffer"`, `"rewind"`, or `"fast_forward"`).
     *   `serverOffset`: Target byte offset reported by the server (`Integer`).
     *   `currentOffset`: Local buffer start offset before realignment (`Integer`).
 
 ### 7.4 Redaction & Payload Abridgement
-To prevent credential leakage and bound total log volume (guaranteeing under 64 KiB of log output even for multi-megabyte uploads), `Driver::Abridge` and `ClientStub` enforce strict sanitization rules before any entry is passed to the logger:
+To prevent credential leakage and ensure log volume is proportional to the number of requests and independent of payload size, `Driver::Abridge` and `ClientStub` enforce strict sanitization rules before any entry is passed to the logger:
 
 1.  **URL Query Elision (`Abridge.url`)**: Upload session URLs contain capability tokens in their query parameters (e.g., `upload_id`, `sid`). `Abridge.url` parses the URI and replaces every query parameter value with `<...>` (e.g., `https://storage.googleapis.com/upload?upload_id=<...>`).
 2.  **Header Allowlisting (`Abridge.headers`)**: Only protocol control headers prefixed with `x-goog-upload-` retain their values in log entries (with `x-goog-upload-url` passed through `Abridge.url`). All other request and response headers—including `Authorization` or custom metadata—are replaced with `"<...>"`. Note that Faraday injects `Authorization` headers below the `ClientStub` logging layer; tests verify that bearer tokens never appear in logs.
@@ -502,7 +506,7 @@ To prevent credential leakage and bound total log volume (guaranteeing under 64 
 4.  **Error Body Truncation (`Abridge.error_body`)**: HTTP error response bodies (status $\ge 400$) are forced to UTF-8 encoding with invalid byte sequences scrubbed and truncated to at most 512 characters.
 
 ### 7.5 Enabling & Configuring Logging
-Logging is disabled by default (`logger: nil`) and incurs zero allocation overhead when inactive. Users and test harnesses can enable logging via two mechanisms:
+Logging is disabled by default (`logger: nil`) and incurs negligible allocation overhead when inactive. Users and test harnesses can enable logging via two mechanisms:
 
 1.  **Environment Variable Opt-In (`GOOGLE_SDK_RUBY_LOGGING_GEMS`)**:
     Setting the `GOOGLE_SDK_RUBY_LOGGING_GEMS` environment variable activates default `Logger` instances writing to `$stderr` at `DEBUG` level (using `Google::Logging::StructuredFormatter` when running in a Google Cloud environment):
