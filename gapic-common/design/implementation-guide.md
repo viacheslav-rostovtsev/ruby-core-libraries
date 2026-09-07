@@ -60,6 +60,7 @@ module Gapic
         :bytes_uploaded,                   # [Integer] Cumulative bytes acknowledged by the server (may decrease on recovery rewind)
         :total_bytes                       # [Integer, nil] Total upload size in bytes if known
       ) do
+        # Important to define it via `self.`, since this block is not a class body 
         self::PHASES = %i[initiating uploading recovering finalizing cancelling completed].freeze
       end
     end

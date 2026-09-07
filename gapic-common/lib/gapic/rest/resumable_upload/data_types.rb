@@ -106,9 +106,11 @@ module Gapic
         :bytes_uploaded,
         :total_bytes
       ) do
+        # Important to define it via `self.`, since this block is not a class body
         self::PHASES = [:initiating, :uploading, :recovering, :finalizing, :cancelling, :completed].freeze
 
         def initialize phase:, bytes_uploaded:, total_bytes: nil
+          # Must use `self.class::` to access constants from the class scope
           unless self.class::PHASES.include? phase
             raise ArgumentError, "Invalid phase: #{phase.inspect}. Expected one of #{self.class::PHASES.inspect}"
           end
