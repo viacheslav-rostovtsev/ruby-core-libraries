@@ -60,7 +60,7 @@ module Gapic
         :bytes_uploaded,                   # [Integer] Cumulative bytes acknowledged by the server (may decrease on recovery rewind)
         :total_bytes                       # [Integer, nil] Total upload size in bytes if known
       ) do
-        # Important to define it via `self.`, since this block is not a class body 
+        # Important to define it via `self.`, since this block is not a class body
         self::PHASES = %i[initiating uploading recovering finalizing cancelling completed].freeze
       end
     end
@@ -427,6 +427,14 @@ The total session timeout is resolved in priority order:
     ```
     *Rationale*: Using `BASE_TIMEOUT` as a floor prevents sub-millisecond timeouts for small payloads while scaling linearly for multi-gigabyte uploads.
 3.  **Default Base Timeout (`BASE_TIMEOUT`)**: If neither a positive timeout nor `upload_size` is provided (e.g., streaming uploads of unknown length), the timeout defaults to `BASE_TIMEOUT` (`3_600` seconds).
+
+#### Bounding Transport Retries by Global Deadline
+Transport retries and individual HTTP exchanges must never exceed the remaining global deadline. When `Driver#make_post_request` invokes `ClientStub#make_post_request`, it computes the per-request timeout from the remaining session budget (`max(deadline - monotonic_now, 0)`), additionally capped by `retry_policy.timeout`:
+```ruby
+remaining = [@deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
+timeout = retry_policy&.timeout ? [remaining, retry_policy.timeout].min : remaining
+```
+This timeout is passed in `options[:timeout]`, ensuring that underlying Faraday requests and `Gapic::Common::RetryPolicy` evaluations always respect the remaining upload budget.
 
 ---
 

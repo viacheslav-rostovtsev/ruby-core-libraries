@@ -175,6 +175,17 @@ module Gapic
           end
         end
 
+        def request_timeout retry_policy
+          remaining = if @deadline
+                        [@deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
+                      else
+                        resolve_timeout
+                      end
+          return [remaining, retry_policy.timeout].min if retry_policy&.timeout
+
+          remaining
+        end
+
         def deadline_exceeded?
           return false unless @deadline
 
@@ -344,7 +355,11 @@ module Gapic
         end
 
         def make_post_request url, headers:, body:, retry_policy:, method_name: nil, start_attempt: 1
-          options = { metadata: headers, retry_policy: retry_policy }
+          options = {
+            metadata:     headers,
+            retry_policy: retry_policy,
+            timeout:      request_timeout(retry_policy)
+          }
           @upload_log.wire_send method: "POST", url: url, headers: headers,
                                 start_attempt: start_attempt, body_size: body.to_s.bytesize, body: body
 

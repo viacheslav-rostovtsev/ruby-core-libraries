@@ -28,18 +28,25 @@ class DriverConfigTest < Minitest::Test
   class FakeClientStub
     attr_reader :requests
 
-    def initialize responses = []
+    def initialize responses = [], on_request: nil
       @responses = responses
       @requests = []
+      @on_request = on_request
     end
 
     def make_post_request uri:, body:, params:, options:, method_name: nil
-      @requests << { uri: uri, body: body, params: params, options: options }
+      @requests << { uri: uri, body: body, params: params, options: options, method_name: method_name }
+      @on_request&.call
       raise "Unexpected request: no scripted response left" if @responses.empty?
 
-      @responses.shift
+      resp = @responses.shift
+      raise resp if resp.is_a? Exception
+
+      resp.respond_to?(:call) ? resp.call : resp
     end
   end
+
+  FakeResponse = Data.define :status, :headers, :body
 
   def test_resolve_timeout_prefers_positive_config_timeout
     stub = FakeClientStub.new
@@ -133,5 +140,56 @@ class DriverConfigTest < Minitest::Test
       end
     end
     assert_empty stub.requests
+  end
+
+  def test_make_post_request_passes_timeout_close_to_remaining_budget_and_decreases_across_calls
+    current_time = 1000.0
+    stub = FakeClientStub.new(scripted_recovery_responses, on_request: -> { current_time += 10.0 })
+    config = CompleteUploadConfig.new(
+      initial_url:             "https://example.com/upload",
+      stream:                  StringIO.new("0123"),
+      upload_size:             4,
+      chunk_size:              10,
+      timeout:                 100.0,
+      data_plane_retry_policy: Gapic::Common::RetryPolicy.new(timeout: 85.0)
+    )
+    driver = Driver.new client_stub: stub, config: config
+
+    Process.stub :clock_gettime, ->(_clock_id) { current_time } do
+      assert_equal "done", driver.run
+    end
+
+    timeouts = stub.requests.map { |req| req[:options][:timeout] }
+    assert_equal [100.0, 85.0, 80.0, 70.0], timeouts
+    timeouts.each_cons 2 do |prev_timeout, next_timeout|
+      assert_operator prev_timeout, :>, next_timeout
+    end
+  end
+
+  private
+
+  def scripted_recovery_responses
+    [
+      FakeResponse.new(
+        status:  200,
+        headers: { "X-Goog-Upload-Status" => "active", "X-Goog-Upload-URL" => "https://example.com/session" },
+        body:    ""
+      ),
+      Gapic::Rest::Error.new(
+        "Service Unavailable",
+        503,
+        headers: { "X-Goog-Upload-Status" => "active" }
+      ),
+      FakeResponse.new(
+        status:  200,
+        headers: { "X-Goog-Upload-Status" => "active", "X-Goog-Upload-Size-Received" => "0" },
+        body:    ""
+      ),
+      FakeResponse.new(
+        status:  200,
+        headers: { "X-Goog-Upload-Status" => "final" },
+        body:    "done"
+      )
+    ]
   end
 end
