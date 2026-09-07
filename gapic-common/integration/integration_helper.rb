@@ -14,6 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+require "logger"
+require "stringio"
 require "minitest/autorun"
 require "minitest/focus"
 require "minitest/mock"
@@ -28,6 +30,7 @@ require "gapic/rest/resumable_upload"
 class ShowcaseIntegrationTest < Minitest::Test
   UPLOAD_PATH = "/resumable/upload/v1beta1/files:upload"
 
+  attr_reader :logger
   attr_reader :progress_records
 
   def showcase_endpoint
@@ -36,6 +39,15 @@ class ShowcaseIntegrationTest < Minitest::Test
 
   def setup
     skip "SHOWCASE_ENDPOINT is not set" if showcase_endpoint.to_s.empty?
+    @log_output = StringIO.new
+    @logger = Logger.new @log_output, level: Logger::DEBUG
+    super
+  end
+
+  def teardown
+    if (!passed? || !ENV["SHOWCASE_LOG"].to_s.empty?) && @log_output && !@log_output.string.empty?
+      warn "\n--- Captured trace for #{name} ---\n#{@log_output.string}--- End trace ---\n"
+    end
     super
   end
 
@@ -48,7 +60,8 @@ class ShowcaseIntegrationTest < Minitest::Test
     Gapic::Rest::ClientStub.new(
       endpoint: showcase_endpoint,
       credentials: :dummy_credentials,
-      raise_faraday_errors: false
+      raise_faraday_errors: false,
+      logger: @logger
     )
   end
 

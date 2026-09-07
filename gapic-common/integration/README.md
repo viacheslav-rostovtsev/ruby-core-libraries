@@ -37,3 +37,15 @@ The `toys test-integration` command (`.toys/test-integration.rb`) manages the `g
 5. **Execution & Teardown**:
    - Sets `ENV["SHOWCASE_ENDPOINT"] = "http://localhost:#{port}"` and runs the Minitest suite (`integration/**/*_test.rb`).
    - An `ensure` block sends `SIGTERM` to the entire process group (`-TERM`) and reaps the child process so no background showcase processes are leaked.
+
+## Logging and Diagnostics
+
+Each integration test captures `DEBUG`-level client and driver logs into an in-memory buffer during execution:
+
+- **Automatic Failure Dump**: If a test fails or raises an unhandled exception, the captured trace is automatically dumped to `stderr` during `teardown`.
+- **Force Log Dump (`SHOWCASE_LOG`)**: Set `SHOWCASE_LOG=1` (or any non-empty value) to dump the captured trace for all executed tests, including passing ones:
+
+```bash
+SHOWCASE_LOG=1 toys test-integration
+```
+
