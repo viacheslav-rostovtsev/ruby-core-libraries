@@ -37,7 +37,7 @@ class DriverRetryTest < Minitest::Test
     end
 
     def make_post_request uri:, body:, params:, options:, method_name: nil
-      @requests << { uri: uri, body: body, params: params, options: options }
+      @requests << { uri: uri, body: body, params: params, options: options, method_name: method_name }
       raise "Unexpected request: no scripted response left" if @responses.empty?
 
       @responses.shift
@@ -45,19 +45,6 @@ class DriverRetryTest < Minitest::Test
   end
 
   def test_start_retries_when_response_lacks_status_header_even_on_200
-    fast_policy = Gapic::Common::RetryPolicy.new(
-      initial_delay: 0.001,
-      max_delay:     0.002,
-      timeout:       1.0,
-      retry_predicate: lambda do |error_or_response|
-        headers = RetryPolicies.extract_headers error_or_response
-        if headers
-          status_hdr = headers["x-goog-upload-status"] || headers["X-Goog-Upload-Status"]
-          return true if status_hdr.nil? || status_hdr.empty?
-        end
-        nil
-      end
-    )
     responses = [
       FakeResponse.new(status: 200, headers: {}, body: ""),
       FakeResponse.new(
@@ -76,7 +63,7 @@ class DriverRetryTest < Minitest::Test
       stream:             StringIO.new("0123"),
       upload_size:        4,
       chunk_size:         10,
-      start_retry_policy: fast_policy
+      start_retry_policy: { initial_delay: 0.001, max_delay: 0.002, timeout: 1.0 }
     )
 
     driver = Driver.new client_stub: stub, config: config
@@ -90,19 +77,6 @@ class DriverRetryTest < Minitest::Test
   end
 
   def test_start_exhausts_retries_when_responses_continually_lack_status_header
-    exhausting_policy = Gapic::Common::RetryPolicy.new(
-      initial_delay: 0.001,
-      max_delay:     0.002,
-      timeout:       0.01,
-      retry_predicate: lambda do |error_or_response|
-        headers = RetryPolicies.extract_headers error_or_response
-        if headers
-          status_hdr = headers["x-goog-upload-status"] || headers["X-Goog-Upload-Status"]
-          return true if status_hdr.nil? || status_hdr.empty?
-        end
-        nil
-      end
-    )
     responses = Array.new(10) { FakeResponse.new status: 200, headers: {}, body: "" }
     stub = FakeClientStub.new responses
     config = CompleteUploadConfig.new(
@@ -110,7 +84,7 @@ class DriverRetryTest < Minitest::Test
       stream:             StringIO.new("0123"),
       upload_size:        4,
       chunk_size:         10,
-      start_retry_policy: exhausting_policy
+      start_retry_policy: { initial_delay: 0.001, max_delay: 0.002, timeout: 0.01 }
     )
 
     driver = Driver.new client_stub: stub, config: config

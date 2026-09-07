@@ -49,9 +49,9 @@ module Gapic
         :chunk_size,                       # [Integer, nil] Explicit chunk size in bytes
         :content_type,                     # [String] MIME type of uploaded media
         :timeout,                          # [Numeric, nil] Total upload timeout in seconds (zero/negative treated as nil)
-        :start_retry_policy,               # [Gapic::Common::RetryPolicy, nil] Default policy for start command
-        :control_plane_retry_policy,       # [Gapic::Common::RetryPolicy, nil] Policy for query/cancel commands
-        :data_plane_retry_policy,          # [Gapic::Common::RetryPolicy, nil] Policy for upload/finalize
+        :start_retry_policy,               # [Gapic::Common::RetryPolicy, Hash, nil] Policy or hash override for start command
+        :control_plane_retry_policy,       # [Gapic::Common::RetryPolicy, Hash, nil] Policy or hash override for query/cancel commands
+        :data_plane_retry_policy,          # [Gapic::Common::RetryPolicy, Hash, nil] Policy or hash override for upload/finalize
         :on_progress                       # [Proc, nil] Callback: ->(progress) with a Progress instance
       )
 
@@ -214,6 +214,7 @@ Full implementation: [reference-implementation.md#3-driver-class](reference-impl
     *   **Start Policy (`start_retry_policy`)**: Applies specifically to session initiation (`start`). Configured with standard retry codes (`["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"]`) and network errors (`[Faraday::ConnectionFailed, Faraday::TimeoutError, SocketError]`). A missing or empty `X-Goog-Upload-Status` header is treated as **retriable** (predicate returns `true`) across **any response code, including 200 OK**.
     *   **Control Plane Policy (`control_plane_retry_policy`)**: Applies to session control requests (`query`, `cancel`). Configured with standard retry codes and network errors. It does **not** retry on a missing `X-Goog-Upload-Status` header, allowing `Core` to evaluate responses immediately.
     *   **Data Plane Policy (`data_plane_retry_policy`)**: Applies to data transmission requests (`upload`, `upload,finalize`, and standalone `finalize`). Shares the standard retry codes and network errors, but treats a missing `X-Goog-Upload-Status` header as **unretriable** (predicate returns `false`). This prevents blind chunk re-transmission and returns `Event::HttpResponse` immediately to `Core` so it can initiate Category 2 `Recovery`.
+    *   **Retry Policy Override Contract**: Each retry policy configuration field accepts a `Gapic::Common::RetryPolicy` instance, a `Hash`, or `nil`. Passing a `RetryPolicy` instance replaces the default policy entirely. Passing a `Hash` constructs a new `RetryPolicy` and applies the category's defaults (`RetryPolicy.new(**hash).apply_defaults(defaults)`), overriding the specified fields while preserving unspecified defaults such as `retry_codes` and `retry_predicate`. Passing `nil` constructs the default policy directly from the category defaults.
 
 ### 4.2 State Transition & Data Mutation Specification
 

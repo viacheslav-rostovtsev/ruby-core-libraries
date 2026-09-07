@@ -71,12 +71,11 @@ module Gapic
                         client_id: client_stub.object_id
           @upload_log = UploadLog.new stub_logger, upload_id: "unstarted"
 
-          @start_retry_policy = config.start_retry_policy ||
-                                self.class.default_start_retry_policy
-          @control_plane_retry_policy = config.control_plane_retry_policy ||
-                                        self.class.default_control_plane_retry_policy
-          @data_plane_retry_policy = config.data_plane_retry_policy ||
-                                     self.class.default_data_plane_retry_policy
+          @start_retry_policy = resolve_retry_policy config.start_retry_policy, RetryPolicies::START_DEFAULTS
+          @control_plane_retry_policy = resolve_retry_policy config.control_plane_retry_policy,
+                                                             RetryPolicies::CONTROL_PLANE_DEFAULTS
+          @data_plane_retry_policy = resolve_retry_policy config.data_plane_retry_policy,
+                                                          RetryPolicies::DATA_PLANE_DEFAULTS
         end
 
         ##
@@ -162,6 +161,19 @@ module Gapic
           when Instruction::TerminateSuccess
             instruction.response.respond_to?(:body) ? instruction.response.body : instruction.response
           when Instruction::TerminateFailure then raise instruction.error
+          end
+        end
+
+        def resolve_retry_policy value, defaults
+          case value
+          when Gapic::Common::RetryPolicy
+            value
+          when Hash
+            Gapic::Common::RetryPolicy.new(**value).apply_defaults(defaults)
+          when nil
+            Gapic::Common::RetryPolicy.new(**defaults)
+          else
+            raise ArgumentError, "Expected RetryPolicy, Hash, or nil, got #{value.class}"
           end
         end
 

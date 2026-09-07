@@ -476,9 +476,9 @@ module Gapic
                         client_id: client_stub.object_id
           @upload_log = UploadLog.new(stub_logger, upload_id: "unstarted")
 
-          @start_retry_policy = config.start_retry_policy || self.class.default_start_retry_policy
-          @control_plane_retry_policy = config.control_plane_retry_policy || self.class.default_control_plane_retry_policy
-          @data_plane_retry_policy = config.data_plane_retry_policy || self.class.default_data_plane_retry_policy
+          @start_retry_policy = resolve_retry_policy(config.start_retry_policy, RetryPolicies::START_DEFAULTS)
+          @control_plane_retry_policy = resolve_retry_policy(config.control_plane_retry_policy, RetryPolicies::CONTROL_PLANE_DEFAULTS)
+          @data_plane_retry_policy = resolve_retry_policy(config.data_plane_retry_policy, RetryPolicies::DATA_PLANE_DEFAULTS)
         end
 
         # Default retry policy for session initiation requests (start).
@@ -486,19 +486,7 @@ module Gapic
         #
         # @return [Gapic::Common::RetryPolicy]
         def self.default_start_retry_policy
-          Gapic::Common::RetryPolicy.new(
-            retry_codes: ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"],
-            initial_delay: 1.0,
-            max_delay: 15.0,
-            multiplier: 1.3,
-            retry_predicate: lambda do |error_or_response|
-              if error_or_response.respond_to?(:headers)
-                status_hdr = error_or_response.headers["x-goog-upload-status"]
-                return true if status_hdr.nil? || status_hdr.empty?
-              end
-              nil
-            end
-          )
+          RetryPolicies.default_start
         end
 
         # Default retry policy for session control requests (query, cancel).
@@ -506,12 +494,7 @@ module Gapic
         #
         # @return [Gapic::Common::RetryPolicy]
         def self.default_control_plane_retry_policy
-          Gapic::Common::RetryPolicy.new(
-            retry_codes: ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"],
-            initial_delay: 1.0,
-            max_delay: 15.0,
-            multiplier: 1.3
-          )
+          RetryPolicies.default_control_plane
         end
 
         # Default retry policy for data plane requests (upload, finalize, upload_finalize).
@@ -520,19 +503,7 @@ module Gapic
         #
         # @return [Gapic::Common::RetryPolicy]
         def self.default_data_plane_retry_policy
-          Gapic::Common::RetryPolicy.new(
-            retry_codes: ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"],
-            initial_delay: 1.0,
-            max_delay: 15.0,
-            multiplier: 1.3,
-            retry_predicate: lambda do |error_or_response|
-              if error_or_response.respond_to?(:headers)
-                status_hdr = error_or_response.headers["x-goog-upload-status"]
-                return false if status_hdr.nil? || status_hdr.empty?
-              end
-              nil
-            end
-          )
+          RetryPolicies.default_data_plane
         end
 
         # Executes event loop until terminal state.
@@ -594,6 +565,19 @@ module Gapic
           end
         end
 
+        def resolve_retry_policy(value, defaults)
+          case value
+          when Gapic::Common::RetryPolicy
+            value
+          when Hash
+            Gapic::Common::RetryPolicy.new(**value).apply_defaults(defaults)
+          when nil
+            Gapic::Common::RetryPolicy.new(**defaults)
+          else
+            raise ArgumentError, "Expected RetryPolicy, Hash, or nil, got #{value.class}"
+          end
+        end
+
         def resolve_timeout
           return @config.timeout if @config.timeout&.positive?
 
@@ -602,6 +586,17 @@ module Gapic
           else
             BASE_TIMEOUT
           end
+        end
+
+        def request_timeout(retry_policy)
+          remaining = if @deadline
+                        [@deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
+                      else
+                        resolve_timeout
+                      end
+          return [remaining, retry_policy.timeout].min if retry_policy&.timeout
+
+          remaining
         end
 
         def deadline_exceeded?
@@ -647,7 +642,13 @@ module Gapic
         end
 
         def make_post_request(url, headers:, body:, retry_policy:, method_name: nil, start_attempt: 1)
-          options = { metadata: headers, retry_policy: retry_policy }
+          return Event::GlobalDeadlineExceeded.new if deadline_exceeded?
+
+          options = {
+            metadata: headers,
+            retry_policy: retry_policy,
+            timeout: request_timeout(retry_policy)
+          }
           @upload_log.wire_send(
             method: "POST", url: url, headers: headers,
             start_attempt: start_attempt, body_size: body.to_s.bytesize, body: body

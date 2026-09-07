@@ -23,6 +23,47 @@ module Gapic
       # Default retry policy generators for control plane and data plane requests.
       #
       module RetryPolicies
+        START_PREDICATE = lambda do |error_or_response|
+          headers = extract_headers error_or_response
+          if headers
+            status_hdr = headers["x-goog-upload-status"] || headers["X-Goog-Upload-Status"]
+            return true if status_hdr.nil? || status_hdr.empty?
+          end
+          nil
+        end
+
+        DATA_PLANE_PREDICATE = lambda do |error_or_response|
+          headers = extract_headers error_or_response
+          if headers
+            status_hdr = headers["x-goog-upload-status"] || headers["X-Goog-Upload-Status"]
+            return false if status_hdr.nil? || status_hdr.empty?
+          end
+          nil
+        end
+
+        START_DEFAULTS = {
+          retry_codes:     ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"].freeze,
+          initial_delay:   1.0,
+          max_delay:       15.0,
+          multiplier:      1.3,
+          retry_predicate: START_PREDICATE
+        }.freeze
+
+        CONTROL_PLANE_DEFAULTS = {
+          retry_codes:   ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"].freeze,
+          initial_delay: 1.0,
+          max_delay:     15.0,
+          multiplier:    1.3
+        }.freeze
+
+        DATA_PLANE_DEFAULTS = {
+          retry_codes:     ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"].freeze,
+          initial_delay:   1.0,
+          max_delay:       15.0,
+          multiplier:      1.3,
+          retry_predicate: DATA_PLANE_PREDICATE
+        }.freeze
+
         ##
         # Default retry policy for session initiation requests (start).
         # Missing X-Goog-Upload-Status header is retriable across any response code,
@@ -30,20 +71,7 @@ module Gapic
         #
         # @return [Gapic::Common::RetryPolicy]
         def self.default_start
-          Gapic::Common::RetryPolicy.new(
-            retry_codes:     ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"],
-            initial_delay:   1.0,
-            max_delay:       15.0,
-            multiplier:      1.3,
-            retry_predicate: lambda do |error_or_response|
-              headers = extract_headers error_or_response
-              if headers
-                status_hdr = headers["x-goog-upload-status"] || headers["X-Goog-Upload-Status"]
-                return true if status_hdr.nil? || status_hdr.empty?
-              end
-              nil
-            end
-          )
+          Gapic::Common::RetryPolicy.new(**START_DEFAULTS)
         end
 
         ##
@@ -52,12 +80,7 @@ module Gapic
         #
         # @return [Gapic::Common::RetryPolicy]
         def self.default_control_plane
-          Gapic::Common::RetryPolicy.new(
-            retry_codes:   ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"],
-            initial_delay: 1.0,
-            max_delay:     15.0,
-            multiplier:    1.3
-          )
+          Gapic::Common::RetryPolicy.new(**CONTROL_PLANE_DEFAULTS)
         end
 
         ##
@@ -66,20 +89,7 @@ module Gapic
         #
         # @return [Gapic::Common::RetryPolicy]
         def self.default_data_plane
-          Gapic::Common::RetryPolicy.new(
-            retry_codes:     ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"],
-            initial_delay:   1.0,
-            max_delay:       15.0,
-            multiplier:      1.3,
-            retry_predicate: lambda do |error_or_response|
-              headers = extract_headers error_or_response
-              if headers
-                status_hdr = headers["x-goog-upload-status"] || headers["X-Goog-Upload-Status"]
-                return false if status_hdr.nil? || status_hdr.empty?
-              end
-              nil
-            end
-          )
+          Gapic::Common::RetryPolicy.new(**DATA_PLANE_DEFAULTS)
         end
 
         ##

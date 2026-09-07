@@ -38,11 +38,19 @@ module Gapic
       # @!attribute [r] timeout
       #   @return [Numeric, nil] Total upload timeout in seconds (zero/negative values treated as nil)
       # @!attribute [r] start_retry_policy
-      #   @return [Gapic::Common::RetryPolicy, nil] Default policy for start command
+      #   @return [Gapic::Common::RetryPolicy, Hash, nil] Retry policy for session initiation (start).
+      #     Passing a {Gapic::Common::RetryPolicy} replaces the default policy.
+      #     Passing a Hash overrides specified settings while preserving unspecified defaults
+      #     (such as retry codes and predicates).
       # @!attribute [r] control_plane_retry_policy
-      #   @return [Gapic::Common::RetryPolicy, nil] Policy for query/cancel commands
+      #   @return [Gapic::Common::RetryPolicy, Hash, nil] Retry policy for session control commands (query/cancel).
+      #     Passing a {Gapic::Common::RetryPolicy} replaces the default policy.
+      #     Passing a Hash overrides specified settings while preserving unspecified defaults.
       # @!attribute [r] data_plane_retry_policy
-      #   @return [Gapic::Common::RetryPolicy, nil] Policy for upload/finalize
+      #   @return [Gapic::Common::RetryPolicy, Hash, nil] Retry policy for data transmission commands (upload/finalize).
+      #     Passing a {Gapic::Common::RetryPolicy} replaces the default policy.
+      #     Passing a Hash overrides specified settings while preserving unspecified defaults
+      #     (such as retry codes and predicates).
       # @!attribute [r] on_progress
       #   @return [Proc, nil] Callback invoked as `->(progress)` with a {Progress} instance
       #
