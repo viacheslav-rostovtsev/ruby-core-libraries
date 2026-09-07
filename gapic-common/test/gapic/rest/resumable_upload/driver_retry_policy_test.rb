@@ -74,6 +74,22 @@ class DriverRetryPolicyTest < Minitest::Test
     assert_same RetryPolicies::DATA_PLANE_PREDICATE, resolved.retry_predicate
   end
 
+  def test_resolve_retry_policy_with_empty_retry_codes_array_honors_empty_array
+    hash_override = { retry_codes: [] }
+    resolved = @driver.send :resolve_retry_policy, hash_override, RetryPolicies::START_DEFAULTS
+
+    assert_kind_of Gapic::Common::RetryPolicy, resolved
+    assert_empty resolved.retry_codes
+    assert_same RetryPolicies::START_PREDICATE, resolved.retry_predicate
+  end
+
+  def test_resolve_retry_policy_with_unknown_hash_key_raises_argument_error
+    err = assert_raises ArgumentError do
+      @driver.send :resolve_retry_policy, { unknown_key: 123 }, RetryPolicies::START_DEFAULTS
+    end
+    assert_match(/unknown keyword: :unknown_key/, err.message)
+  end
+
   def test_resolve_retry_policy_with_invalid_type_raises_argument_error
     err = assert_raises ArgumentError do
       @driver.send :resolve_retry_policy, "invalid", RetryPolicies::START_DEFAULTS
