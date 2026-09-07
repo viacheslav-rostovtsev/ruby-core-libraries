@@ -422,9 +422,92 @@ The total session timeout is resolved in priority order:
 
 ## 7. Observability Standards
 
-When injecting optional loggers (`logger: nil`), utilities must use block syntax to prevent string formatting overhead when debug levels are disabled:
-```ruby
-@logger&.debug do
-  "ResumableUpload::Driver: Transmitting chunk offset #{@core.state.offset} (effective size: #{@core.state.chunk_size})"
-end
-```
+### 7.1 Architecture & Separation of Concerns
+Because `Rules` is a pure decision engine and `Core` is a side-effect-free state container, protocol decisions are encoded as immutable `Decision` data structures and logged exclusively by the `Driver` via `Driver::UploadLog`.
+
+Each invocation of `Driver#run` generates a fresh UUIDv4 session identifier (`uploadId`) that is attached to every log entry emitted during that run. Structured log entries are constructed using `Gapic::LoggingConcerns` (`StubLogger` yielding a `LogEntryBuilder` producing `Google::Logging::Message` instances). Machine-readable state and telemetry are stored in `Google::Logging::Message#fields`, allowing log message text to evolve independently without breaking structured queries.
+
+### 7.2 Log Level & Recipe Mapping
+The `Driver` emits structured logs across three severity levels (`INFO`, `DEBUG`, `WARN`). High-frequency per-chunk acknowledgements (`:ack_chunk`) and duplicate cancellation signals (`:ignore_duplicate_cancel`) are suppressed from `INFO` lifecycle logs to avoid log volume bloat on multi-gigabyte uploads.
+
+| Severity | Category | Trigger / Recipe | Message Summary |
+| :--- | :--- | :--- | :--- |
+| `INFO` | Lifecycle | `:start_session` | Initiating resumable upload |
+| `INFO` | Lifecycle | `:begin_transmission` | Upload session established |
+| `INFO` | Lifecycle | `:send_upload_finalize` | Sending final upload chunk |
+| `INFO` | Lifecycle | `:send_finalize` | Sending finalize command |
+| `INFO` | Lifecycle | `:enter_recovery` | Entering upload recovery |
+| `INFO` | Lifecycle | `:retry_recovery` | Retrying upload recovery query |
+| `INFO` | Lifecycle | `:realign_from_recovery` | Resuming upload from server offset |
+| `INFO` | Lifecycle | `:complete_upload_with_data`, `:complete_upload_finalized` | Resumable upload completed |
+| `INFO` | Lifecycle | `:cancel_session` | Canceling resumable upload |
+| `INFO` | Lifecycle | `:complete_cancellation` | Resumable upload canceled |
+| `DEBUG` | Lifecycle | `:send_chunk` | Sending upload chunk |
+| `DEBUG` | Decision | Every `Core#dispatch` transition | `Rules: <fromStatus> + <shape> -> <recipe> -> <toStatus>` |
+| `DEBUG` | Wire | Outbound HTTP request (`wire_send`) | `Sending <method> request` |
+| `DEBUG` | Wire | Inbound HTTP response (`wire_receive`) | `Received HTTP <status>` |
+| `DEBUG` | Wire | Transport exception (`wire_failure`) | `Request failed: <kind>` |
+| `DEBUG` | Buffer | Stream/buffer realignment (`buffer_realign`) | `Buffer realignment: <action>` |
+| `WARN` | Lifecycle | `:fail_with_deadline_exceeded`, `:fail_with_rejected`, `:fail_with_bad_response`, `:fail_with_request_error` | Resumable upload failed |
+| `WARN` | Transition | `InvalidTransitionError` (`unmatched_transition`) | Unmatched transition |
+| `WARN` | Buffer | Backward server offset rewind on unseekable stream | Server offset rewind on unseekable stream |
+
+### 7.3 Structured Field Glossary
+All log entries emitted by `UploadLog` populate structured fields in `Google::Logging::Message#fields`:
+
+*   **Common Context Fields** (present on all entries):
+    *   `system`: `"gapic-common"`
+    *   `serviceName`: `"ResumableUpload"`
+    *   `clientId`: Object ID of the underlying `Gapic::Rest::ClientStub`.
+    *   `uploadId`: Unique UUIDv4 identifying the specific `Driver#run` execution.
+*   **Decision & Lifecycle Fields**:
+    *   `fromStatus`: Protocol status symbol prior to event dispatch.
+    *   `toStatus`: Resulting protocol status symbol (`decision.next_state.status`).
+    *   `shape`: Canonical event shape symbol classified by `Rules.shape_of`.
+    *   `recipe`: Transition recipe method symbol executed by `Rules`.
+    *   `offset`: Current server-confirmed byte offset (`Integer`).
+    *   `inFlightLength`: Byte length of the chunk currently in flight (`Integer`).
+    *   `instructions`: Array of abridged instruction hashes emitted by the transition.
+    *   `uploadSize`: Total expected upload size in bytes from `config.upload_size` (on `:start_session`).
+    *   `requestedChunkSize`: Configured chunk size in bytes from `config.chunk_size` (on `:start_session`).
+    *   `effectiveChunkSize`: Negotiated chunk size aligned to server granularity (on `:begin_transmission`).
+    *   `granularity`: Server chunk alignment modulus from `X-Goog-Upload-Chunk-Granularity` (on `:begin_transmission`).
+    *   `uploadUrl`: Abridged session upload URL (on `:begin_transmission` and `:cancel_session`).
+    *   `error`: Terminal exception message string (on `fail_with_*` and `unmatched_transition`).
+*   **Wire & Transport Fields**:
+    *   `method`: HTTP verb (`:post`, `:put`, etc.).
+    *   `url`: Abridged request target URI.
+    *   `headers`: Redacted HTTP header hash.
+    *   `startAttempt`: Retry attempt counter (`Integer`).
+    *   `command`: Value of `X-Goog-Upload-Command` header.
+    *   `bodySize`: Total byte length of request payload (`Integer`).
+    *   `body`: Abridged payload or error body snippet.
+    *   `status`: HTTP response status code (`Integer`).
+    *   `uploadStatus`: Value of `X-Goog-Upload-Status` response header.
+    *   `sizeReceived`: Parsed integer value of `X-Goog-Upload-Size-Received` response header.
+    *   `kind`: Transport failure classification symbol (`:retries_exhausted`, `:connection_failed`, etc.).
+*   **Buffer Realignment Fields**:
+    *   `action`: Realignment strategy applied (`:keep_buffer`, `:discard_prefix`, `:seek_backward`, etc.).
+    *   `serverOffset`: Target byte offset reported by the server (`Integer`).
+    *   `currentOffset`: Local buffer start offset before realignment (`Integer`).
+
+### 7.4 Redaction & Payload Abridgement
+To prevent credential leakage and bound total log volume (guaranteeing under 64 KiB of log output even for multi-megabyte uploads), `Driver::Abridge` and `ClientStub` enforce strict sanitization rules before any entry is passed to the logger:
+
+1.  **URL Query Elision (`Abridge.url`)**: Upload session URLs contain capability tokens in their query parameters (e.g., `upload_id`, `sid`). `Abridge.url` parses the URI and replaces every query parameter value with `<...>` (e.g., `https://storage.googleapis.com/upload?upload_id=<...>`).
+2.  **Header Allowlisting (`Abridge.headers`)**: Only protocol control headers prefixed with `x-goog-upload-` retain their values in log entries (with `x-goog-upload-url` passed through `Abridge.url`). All other request and response headers—including `Authorization` or custom metadata—are replaced with `"<...>"`. Note that Faraday injects `Authorization` headers below the `ClientStub` logging layer; tests verify that bearer tokens never appear in logs.
+3.  **Binary Payload Abridgement (`Abridge.bytes` & `ClientStub#abridge_request_body`)**:
+    *   In `Driver::Abridge.bytes`, binary payloads of 64 bytes or more are abridged to their first 32 bytes encoded in hexadecimal followed by the total byte size: `"<first 32 bytes hex>... <N bytes>"`.
+    *   In `Gapic::Rest::ClientStub#log_request`, any request body exceeding 1 KiB (1024 bytes) or containing non-UTF-8 binary data is abridged to `"<N bytes, first 32: <hex>>"`, preventing 8 MiB upload chunks from being dumped into `DEBUG` logs.
+4.  **Error Body Truncation (`Abridge.error_body`)**: HTTP error response bodies (status $\ge 400$) are forced to UTF-8 encoding with invalid byte sequences scrubbed and truncated to at most 512 characters.
+
+### 7.5 Enabling & Configuring Logging
+Logging is disabled by default (`logger: nil`) and incurs zero allocation overhead when inactive. Users and test harnesses can enable logging via two mechanisms:
+
+1.  **Environment Variable Opt-In (`GOOGLE_SDK_RUBY_LOGGING_GEMS`)**:
+    Setting the `GOOGLE_SDK_RUBY_LOGGING_GEMS` environment variable activates default `Logger` instances writing to `$stderr` at `DEBUG` level (using `Google::Logging::StructuredFormatter` when running in a Google Cloud environment):
+    *   `GOOGLE_SDK_RUBY_LOGGING_GEMS=all` or `GOOGLE_SDK_RUBY_LOGGING_GEMS=true`: Enables logging across all Google Cloud Ruby SDK components.
+    *   `GOOGLE_SDK_RUBY_LOGGING_GEMS=gapic-common`: Enables logging specifically for `gapic-common` (including `ResumableUpload::Driver` and `ClientStub`).
+    *   `GOOGLE_SDK_RUBY_LOGGING_GEMS=false` or `none`: Explicitly disables SDK logging even if a default logger is configured.
+2.  **Explicit Logger Injection**:
+    Pass any Ruby `::Logger`-compatible instance directly to `Driver.new(client_stub: stub, config: config, logger: my_logger)` or configure it on the parent service client config.

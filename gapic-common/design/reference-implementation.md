@@ -428,14 +428,23 @@ module Gapic
 
         # @param client_stub [Gapic::Rest::ClientStub]
         # @param config [CompleteUploadConfig]
-        # @param logger [Logger, nil] Optional logger
-        def initialize(client_stub:, config:, logger: nil)
+        # @param core [Core, nil] Optional Core state machine (defaults to new Core with config)
+        # @param logger [Logger, nil] Optional logger override
+        def initialize(client_stub:, config:, core: nil, logger: nil)
           @client_stub = client_stub
           @config = config
-          @logger = logger
-          @core = Core.new(config)
+          @core = core || Core.new(config)
           @buffer = "".b
           @buffer_start_offset = 0
+
+          endpoint = client_stub.respond_to?(:endpoint) ? client_stub.endpoint : nil
+          setup_logging logger: logger || (client_stub.respond_to?(:logger) ? client_stub.logger : nil),
+                        system_name: "gapic-common",
+                        service: "ResumableUpload",
+                        endpoint: endpoint,
+                        client_id: client_stub.object_id
+          @upload_log = UploadLog.new(stub_logger, upload_id: "unstarted")
+
           @start_retry_policy = config.start_retry_policy || self.class.default_start_retry_policy
           @control_plane_retry_policy = config.control_plane_retry_policy || self.class.default_control_plane_retry_policy
           @data_plane_retry_policy = config.data_plane_retry_policy || self.class.default_data_plane_retry_policy
@@ -499,45 +508,60 @@ module Gapic
         #
         # @return [String, Object] Final response body
         def run
+          @upload_log = UploadLog.new(stub_logger, upload_id: LoggingConcerns.random_uuid4)
           @deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + resolve_timeout
-          pending_event = Event::StartUpload
+          pending_event = Event::StartUpload.new
 
           loop do
-            instructions = @core.dispatch(pending_event)
+            instructions = dispatch_event(pending_event)
             pending_event = nil
 
             if deadline_exceeded? && !terminal_instructions?(instructions)
-              instructions = @core.dispatch(Event::GlobalDeadlineExceeded)
+              instructions = dispatch_event(Event::GlobalDeadlineExceeded.new)
             end
 
             instructions.each do |instruction|
-              case instruction
-              when Instruction::NotifyProgress
-                execute_notify_progress(instruction)
-              when Instruction::RealignBuffer
-                execute_realign_buffer(instruction)
-              when Instruction::FillBuffer
-                pending_event = execute_fill_buffer(instruction)
-              when Instruction::SendStart
-                pending_event = execute_send_start(instruction)
-              when Instruction::SendChunk
-                pending_event = execute_send_chunk(instruction)
-              when Instruction::SendFinalize
-                pending_event = execute_send_finalize(instruction)
-              when Instruction::SendQuery
-                pending_event = execute_send_query(instruction)
-              when Instruction::SendCancel
-                pending_event = execute_send_cancel(instruction)
-              when Instruction::TerminateSuccess
-                return instruction.response.respond_to?(:body) ? instruction.response.body : instruction.response
-              when Instruction::TerminateFailure
-                raise instruction.error
-              end
+              result = dispatch_instruction(instruction)
+              pending_event = result if pending_event_type?(result)
+              return result if instruction.is_a?(Instruction::TerminateSuccess)
             end
           end
         end
 
         private
+
+        def dispatch_event(event)
+          instructions = begin
+            @core.dispatch(event)
+          rescue InvalidTransitionError => e
+            @upload_log.unmatched_transition(@core.state, event, e)
+            raise
+          end
+          @upload_log.decision(@core.last_decision)
+          @upload_log.lifecycle(@core.last_decision, @config)
+          instructions
+        end
+
+        def pending_event_type?(obj)
+          obj.is_a?(Event::ChunkRead) || obj.is_a?(Event::HttpResponse) ||
+            obj.is_a?(Event::RequestFailed) || obj.is_a?(Event::GlobalDeadlineExceeded)
+        end
+
+        def dispatch_instruction(instruction)
+          case instruction
+          when Instruction::NotifyProgress then execute_notify_progress(instruction)
+          when Instruction::RealignBuffer then execute_realign_buffer(instruction)
+          when Instruction::FillBuffer then execute_fill_buffer(instruction)
+          when Instruction::SendStart then execute_send_start(instruction)
+          when Instruction::SendChunk then execute_send_chunk(instruction)
+          when Instruction::SendFinalize then execute_send_finalize(instruction)
+          when Instruction::SendQuery then execute_send_query(instruction)
+          when Instruction::SendCancel then execute_send_cancel(instruction)
+          when Instruction::TerminateSuccess
+            instruction.response.respond_to?(:body) ? instruction.response.body : instruction.response
+          when Instruction::TerminateFailure then raise instruction.error
+          end
+        end
 
         def resolve_timeout
           return @config.timeout if @config.timeout&.positive?
@@ -566,6 +590,7 @@ module Gapic
 
         # Synchronous side-effect: adjusts in-memory buffer window and stream
         def execute_realign_buffer(instruction)
+          # Logs buffer_realign via @upload_log (WARN on unseekable rewind, DEBUG otherwise)
           # Implements Section 2.5 buffer alignment Cases 1, 2, and 3
         end
 
@@ -578,20 +603,38 @@ module Gapic
         # Network operation: wraps start HTTP request in start_retry_policy
         # @return [Event::HttpResponse, Event::RequestFailed]
         def execute_send_start(instruction)
-          policy = @start_retry_policy
-          # Executes POST initiation request via @client_stub with policy in a retry loop.
+          # Executes POST initiation request via make_post_request(..., method_name: "ResumableUpload.start").
           # Retries missing X-Goog-Upload-Status header across any response code, including 200 OK.
-          # Returns Event::HttpResponse for any completed HTTP response (including 4xx/5xx).
-          # Returns Event::RequestFailed(kind: :retries_exhausted, ...) on retry exhaustion.
+          # Logs @upload_log.wire_failure on retry exhaustion.
         end
 
         # Network operation: wraps HTTP request in data_plane_retry_policy
         # @return [Event::HttpResponse, Event::RequestFailed]
         def execute_send_chunk(instruction)
           # Slices body from @buffer[instruction.offset - @buffer_start_offset, instruction.length]
-          # Executes POST request via @client_stub with @data_plane_retry_policy
-          # Returns Event::HttpResponse for any completed HTTP response (including 4xx/5xx).
-          # Returns Event::RequestFailed(kind:, message:, source_error:) on unhandled transport error or retry exhaustion.
+          # Executes POST request via make_post_request(..., method_name: "ResumableUpload.upload")
+        end
+
+        def make_post_request(url, headers:, body:, retry_policy:, method_name: nil, start_attempt: 1)
+          options = { metadata: headers, retry_policy: retry_policy }
+          @upload_log.wire_send(
+            method: "POST", url: url, headers: headers,
+            start_attempt: start_attempt, body_size: body.to_s.bytesize, body: body
+          )
+          response = @client_stub.make_post_request(
+            uri: url, body: body, params: {}, options: options, method_name: method_name
+          )
+          event = Event::HttpResponse.new(status: response.status, headers: response.headers || {}, body: response.body)
+          @upload_log.wire_receive(event)
+          event
+        rescue StandardError => e
+          event = rescue_request_error(e)
+          if event.is_a?(Event::HttpResponse)
+            @upload_log.wire_receive(event)
+          else
+            @upload_log.wire_failure(event)
+          end
+          event
         end
       end
     end
