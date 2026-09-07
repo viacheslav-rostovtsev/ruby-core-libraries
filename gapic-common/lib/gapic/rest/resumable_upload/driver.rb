@@ -355,6 +355,8 @@ module Gapic
         end
 
         def make_post_request url, headers:, body:, retry_policy:, method_name: nil, start_attempt: 1
+          return Event::GlobalDeadlineExceeded.new if deadline_exceeded?
+
           options = {
             metadata:     headers,
             retry_policy: retry_policy,

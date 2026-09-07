@@ -142,6 +142,40 @@ class DriverConfigTest < Minitest::Test
     assert_empty stub.requests
   end
 
+  def test_run_raises_deadline_exceeded_when_clock_advances_past_deadline_mid_batch
+    current_time = 100.0
+    responses = [
+      FakeResponse.new(
+        status:  200,
+        headers: { "X-Goog-Upload-Status" => "active", "X-Goog-Upload-URL" => "https://example.com/session" },
+        body:    ""
+      )
+    ]
+    stub = FakeClientStub.new responses
+    # Advance clock past deadline (105.0) mid-batch during NotifyProgress(:finalizing) before SendChunk
+    on_progress = lambda do |progress|
+      current_time = 110.0 if progress.phase == :finalizing
+    end
+    config = CompleteUploadConfig.new(
+      initial_url: "https://example.com/upload",
+      stream:      StringIO.new("0123"),
+      upload_size: 4,
+      chunk_size:  10,
+      timeout:     5,
+      on_progress: on_progress
+    )
+    driver = Driver.new client_stub: stub, config: config
+
+    Process.stub :clock_gettime, ->(_clock_id) { current_time } do
+      assert_raises Gapic::Common::DeadlineExceededError do
+        driver.run
+      end
+    end
+
+    # Only the start request was made; SendChunk hit deadline_exceeded? inside make_post_request
+    assert_equal 1, stub.requests.size
+  end
+
   def test_make_post_request_passes_timeout_close_to_remaining_budget_and_decreases_across_calls
     current_time = 1000.0
     stub = FakeClientStub.new(scripted_recovery_responses, on_request: -> { current_time += 10.0 })
