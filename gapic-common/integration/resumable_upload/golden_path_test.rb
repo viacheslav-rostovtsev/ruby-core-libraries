@@ -48,4 +48,27 @@ class GoldenPathTest < ShowcaseIntegrationTest
       Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 1_500_000, total_bytes: 1_500_000)
     ], progress_records
   end
+
+  def test_small_upload_default_chunk_size
+    size = 100_000
+    stream = StringIO.new payload(size)
+
+    config = build_config(
+      stream: stream,
+      upload_size: size
+    )
+
+    driver = Gapic::Rest::ResumableUpload::Driver.new(
+      client_stub: showcase_client_stub,
+      config: config
+    )
+
+    result = driver.run
+    parsed = JSON.parse result
+
+    assert_equal size, parsed["size"]
+    assert_equal [
+      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: size, total_bytes: size)
+    ], progress_records
+  end
 end

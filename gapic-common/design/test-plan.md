@@ -1,6 +1,6 @@
-# Resumable Upload Test Plan
+# Resumable Upload Unit Test Plan
 
-This document outlines the complete unit and integration test plan for the Resumable Upload protocol implementation in `gapic-common`. It details all test suites, systems under test (SUT), test doubles, test cases, and behavioral assertions added across the protocol layers.
+This document outlines the complete unit test plan for the Resumable Upload protocol implementation in `gapic-common`. It details all unit test suites, systems under test (SUT), test doubles, test cases, and behavioral assertions across the protocol layers. For end-to-end integration tests against `gapic-showcase`, see [integration-test-plan.md](./integration-test-plan.md).
 
 ---
 
