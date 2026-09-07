@@ -71,4 +71,30 @@ class GoldenPathTest < ShowcaseIntegrationTest
       Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: size, total_bytes: size)
     ], progress_records
   end
+
+  def test_standalone_finalize_unseekable_stream
+    chunk_size = 262_144
+    size = 3 * chunk_size
+    stream = UnseekableStream.new payload(size)
+
+    config = build_config(
+      stream: stream,
+      chunk_size: chunk_size
+    )
+
+    driver = Gapic::Rest::ResumableUpload::Driver.new(
+      client_stub: showcase_client_stub,
+      config: config
+    )
+
+    result = driver.run
+    parsed = JSON.parse result
+
+    assert_equal size, parsed["size"]
+    assert_equal [
+      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 262_144, total_bytes: nil),
+      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 524_288, total_bytes: nil),
+      Gapic::Rest::ResumableUpload::Progress.new(bytes_uploaded: 786_432, total_bytes: nil)
+    ], progress_records
+  end
 end

@@ -30,6 +30,23 @@ require "gapic/rest/resumable_upload"
 class ShowcaseIntegrationTest < Minitest::Test
   UPLOAD_PATH = "/resumable/upload/v1beta1/files:upload"
 
+  ##
+  # Stream double that intentionally does not implement #seek.
+  #
+  class UnseekableStream
+    def initialize data
+      @io = StringIO.new data
+    end
+
+    def read length = nil
+      @io.read length
+    end
+
+    def pos
+      @io.pos
+    end
+  end
+
   attr_reader :logger
   attr_reader :progress_records
 

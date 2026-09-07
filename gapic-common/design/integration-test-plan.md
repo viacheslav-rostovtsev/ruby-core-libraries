@@ -48,6 +48,7 @@ flowchart TD
   * `showcase_client_stub`: Instantiates a real `Gapic::Rest::ClientStub` targeting `SHOWCASE_ENDPOINT` with `raise_faraday_errors: false` and an attached `DEBUG` logger.
   * `build_config`: Creates a `CompleteUploadConfig` targeting `/resumable/upload/v1beta1/files:upload` with a default `on_progress` callback that appends every `Progress` struct to `@progress_records`.
   * `payload(size)`: Generates deterministic binary strings of arbitrary byte length for stream uploads.
+  * `UnseekableStream`: Stream wrapper around `StringIO` that exposes `#read` and `#pos` while omitting `#seek` (`respond_to?(:seek)` is `false`).
   * **Diagnostic Trace Capture**: Buffers `DEBUG`-level driver logs in memory during each test run and dumps the full trace to `stderr` only if a test fails (or when `SHOWCASE_LOG` is set).
 
 ---
@@ -81,3 +82,22 @@ Tests standard, uninterrupted resumable upload workflows against `gapic-showcase
   * Returned JSON body reports `"size" == 100_000`.
   * `progress_records` contains exactly 1 `Progress` notification:
     * `Progress(bytes_uploaded: 100_000, total_bytes: 100_000)`
+
+#### Case 3. Standalone finalize on unseekable stream (`test_standalone_finalize_unseekable_stream`)
+* **Scenario**: Uploads a `786_432`-byte payload (`3 * 262_144` bytes) wrapped in an `UnseekableStream`, with `chunk_size: 262_144` (256 KiB) and `upload_size` omitted (`nil`).
+* **Coverage**:
+  * Unknown total upload size on `start` (omitted `X-Goog-Upload-Header-Content-Length`).
+  * End-of-exact-boundary stream reading path (payload is an exact multiple of `chunk_size`, so EOF is not detected until the subsequent buffer fill).
+  * Standalone `SendFinalize` instruction (`upload_command: "finalize"` with empty body).
+* **Protocol Flow**:
+  1. `start` command initiates the session without a total content length header.
+  2. Chunk 1 transmits bytes `0..262143` (`upload`).
+  3. Chunk 2 transmits bytes `262144..524287` (`upload`).
+  4. Chunk 3 transmits bytes `524288..786431` (`upload`).
+  5. Next buffer read returns 0 bytes at EOF (`:chunk_read_eof_empty`), emitting `SendFinalize` to send a standalone `finalize` request at offset `786432`.
+* **Assertions**:
+  * Returned JSON body reports `"size" == 786_432`.
+  * `progress_records` contains 3 `Progress` notifications with `total_bytes: nil`:
+    * `Progress(bytes_uploaded: 262_144, total_bytes: nil)`
+    * `Progress(bytes_uploaded: 524_288, total_bytes: nil)`
+    * `Progress(bytes_uploaded: 786_432, total_bytes: nil)`
