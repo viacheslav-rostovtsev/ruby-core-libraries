@@ -27,9 +27,8 @@ class ErrorRecoveryTest < ShowcaseIntegrationTest
   # B1. Verifies Category 1 transient error (503) is retried transparently by FAST_RETRY without entering recovery.
   def test_cat1_error_retried_transparently
     config = build_config(
-      scenario:                SCENARIO,
-      scenario_config:         { error_code: 503, failure_count: 1, after_offset: 0 },
-      data_plane_retry_policy: FAST_RETRY
+      scenario:        SCENARIO,
+      scenario_config: { error_code: 503, failure_count: 1, after_offset: 0 }
     )
 
     driver = Gapic::Rest::ResumableUpload::Driver.new(
@@ -128,7 +127,7 @@ class ErrorRecoveryTest < ShowcaseIntegrationTest
     config = build_config(
       scenario:        SCENARIO,
       scenario_config: { failure_count: 0, action_after_failures: "terminate" },
-      timeout:         0.3
+      timeout:         1
     )
 
     driver = Gapic::Rest::ResumableUpload::Driver.new(

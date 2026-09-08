@@ -58,7 +58,8 @@ class GoldenPathTest < ShowcaseIntegrationTest
 
     config = build_config(
       stream: stream,
-      upload_size: size
+      upload_size: size,
+      chunk_size: nil # use default chunk size
     )
 
     driver = Gapic::Rest::ResumableUpload::Driver.new(

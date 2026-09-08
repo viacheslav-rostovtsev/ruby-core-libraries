@@ -129,3 +129,65 @@ Tests dynamic chunk size resolution when the server mandates a byte alignment mo
   * `offsets` equals `[0, 0, 299_776, 599_552, 899_328, 899_328, 1_000_000]`.
   * `phases` equals `[:initiating, :uploading, :uploading, :uploading, :uploading, :finalizing, :completed]`.
 
+### 2.3 Error Recovery Suite (`integration/resumable_upload/error_recovery_test.rb`)
+
+Tests Category 1 transient transport retries and Category 2 protocol recovery workflows against `scenario: "non_fatal_error_on_chunk_upload"`.
+
+#### Case 1. Category 1 transient error retried transparently (`test_cat1_error_retried_transparently`)
+* **Scenario**: Injects a single `503 Service Unavailable` response at offset `0` (`error_code: 503, failure_count: 1, after_offset: 0`).
+* **Protocol Flow**:
+  1. `start` establishes the session (`200 active`).
+  2. First attempt to upload chunk 1 (`0..262143`) receives `503`.
+  3. `Driver` intercepts the transient error via `data_plane_retry_policy` (`FAST_RETRY`) and retries the chunk transparently without entering protocol `Recovery`.
+  4. Subsequent chunks and standalone `finalize` succeed normally.
+* **Assertions**:
+  * Returned JSON body reports `"size" == 786_432`.
+  * `phases` does not include `:recovering` (`[:initiating, :uploading, :uploading, :uploading, :uploading, :finalizing, :completed]`).
+  * `offsets` equals `[0, 0, 262_144, 524_288, 786_432, 786_432, 786_432]`.
+
+#### Case 2. Simple Category 2 error recovery at offset 0 (`test_simple_cat2_error_recovery`)
+* **Scenario**: Injects a single `409 Conflict` with `X-Goog-Upload-Status: active` at offset `0` (`error_code: 409, failure_count: 1, after_offset: 0`).
+* **Protocol Flow**:
+  1. First upload chunk receives `409` (`:response_cat2`).
+  2. `Core` transitions to `Recovery` (`:recovering`) and issues `SendQuery`.
+  3. Server responds with `X-Goog-Upload-Size-Received: 0`; client realigns buffer to offset `0`, retransmits chunk 1, and completes the upload.
+* **Assertions**:
+  * Returned JSON body reports `"size" == 786_432`.
+  * `phases` equals `[:initiating, :uploading, :recovering, :uploading, :uploading, :uploading, :uploading, :finalizing, :completed]`.
+  * `offsets` equals `[0, 0, 0, 0, 262_144, 524_288, 786_432, 786_432, 786_432]`.
+
+#### Case 3. Two consecutive Category 2 recoveries on chunk 2 (`test_two_consecutive_cat2_recoveries_on_chunk_2`)
+* **Scenario**: Injects two consecutive `409` errors at offset `262_144` (`error_code: 409, failure_count: 2, after_offset: 262_144`).
+* **Protocol Flow**:
+  1. Chunk 1 (`0..262143`) succeeds.
+  2. First attempt at chunk 2 (`262144..524287`) fails with `409` -> `:recovering` -> `query` (offset `262_144`) -> `:uploading`.
+  3. Second attempt at chunk 2 fails with `409` -> `:recovering` -> `query` (offset `262_144`) -> `:uploading`.
+  4. Third attempt at chunk 2 succeeds; chunk 3 and `finalize` complete normally.
+* **Assertions**:
+  * Returned JSON body reports `"size" == 786_432`.
+  * `phases` equals `[:initiating, :uploading, :uploading, :recovering, :uploading, :recovering, :uploading, :uploading, :uploading, :finalizing, :completed]`.
+  * `offsets` equals `[0, 0, 262_144, 262_144, 262_144, 262_144, 262_144, 524_288, 786_432, 786_432, 786_432]`.
+
+#### Case 4. Category 2 failure on finalizing chunk (`test_cat2_failure_on_finalizing_chunk`)
+* **Scenario**: Uploads a `786_332`-byte payload (`3 * 262_144 - 100`) where chunk 3 (`524288..786331`) carries `upload, finalize`, injecting a `409` error at offset `524_288` (`error_code: 409, failure_count: 1, after_offset: 524_288`).
+* **Protocol Flow**:
+  1. Chunks 1 and 2 succeed, advancing offset to `524_288`.
+  2. Client enters `:finalizing` and transmits chunk 3 with `upload, finalize`.
+  3. Server returns `409` (`:response_cat2`); client transitions from `:finalizing` to `:recovering`, queries server (`X-Goog-Upload-Size-Received: 524288`), realigns buffer, re-enters `:finalizing`, and retransmits `upload, finalize` to completion.
+* **Assertions**:
+  * Returned JSON body reports `"size" == 786_332`.
+  * `phases` equals `[:initiating, :uploading, :uploading, :uploading, :finalizing, :recovering, :uploading, :finalizing, :completed]`.
+  * `offsets` equals `[0, 0, 262_144, 524_288, 524_288, 524_288, 524_288, 524_288, 786_332]`.
+
+#### Case 5. Repeated no-header failures until global deadline exceeded (`test_no_headers_failure_recovers_until_deadline_exceeded`)
+* **Scenario**: Configures `failure_count: 0, action_after_failures: "terminate"` with a 1-second session `timeout`.
+* **Protocol Flow**:
+  1. Server responds to every upload chunk with HTTP `500` and no `X-Goog-Upload-Status` header.
+  2. `data_plane_retry_policy` treats missing `X-Goog-Upload-Status` as unretriable (`predicate` returns `false`), yielding `Event::HttpResponse(500)` to `Core`.
+  3. `Core` classifies the response as Category 2 (`:response_cat2`), enters `:recovering`, queries the server (which returns `200 active` at offset `0`), and retries the upload.
+  4. This recovery loop repeats until the 1-second global session deadline expires and `Driver#run` raises `Gapic::Common::DeadlineExceededError`.
+* **Assertions**:
+  * Raises `Gapic::Common::DeadlineExceededError`.
+  * `phases.count(:recovering) >= 2`.
+
+

@@ -660,6 +660,8 @@ module Gapic
           @upload_log.wire_receive(event)
           event
         rescue StandardError => e
+          return Event::GlobalDeadlineExceeded.new if deadline_exceeded?
+
           event = rescue_request_error(e)
           if event.is_a?(Event::HttpResponse)
             @upload_log.wire_receive(event)

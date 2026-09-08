@@ -383,6 +383,12 @@ module Gapic
           @upload_log.wire_receive event
           event
         rescue StandardError => e
+          # If the global deadline expired during the HTTP call (e.g. Net::HTTP connection or read timeout
+          # triggered by request_timeout reaching 0 at @deadline), emit GlobalDeadlineExceeded rather than
+          # Event::RequestFailed. Otherwise, in states like Recovery where Event::RequestFailed is immediately
+          # terminal, the state machine would raise the underlying transport error instead of DeadlineExceededError.
+          return Event::GlobalDeadlineExceeded.new if deadline_exceeded?
+
           event = rescue_request_error e
           if event.is_a? Event::HttpResponse
             @upload_log.wire_receive event
