@@ -46,7 +46,8 @@ flowchart TD
 ### 1.2 Test Harness (`integration/integration_helper.rb`)
 * **`ShowcaseIntegrationTest`**: Base class providing helper methods for test configuration:
   * `showcase_client_stub`: Instantiates a real `Gapic::Rest::ClientStub` targeting `SHOWCASE_ENDPOINT` with `raise_faraday_errors: false` and an attached `DEBUG` logger.
-  * `build_config`: Creates a `CompleteUploadConfig` targeting `/resumable/upload/v1beta1/files:upload` with a default `on_progress` callback that appends every `Progress` struct to `@progress_records`.
+  * `build_config(scenario: nil, scenario_config: {}, **overrides)`: Creates a `CompleteUploadConfig` targeting `/resumable/upload/v1beta1/files:upload`. When `scenario` is provided, injects `X-Goog-Test-Scenario` and `X-Goog-Test-Scenario-Config` (with a generated `client_uuid` merged with `scenario_config`) into `initial_headers`. Configures fast retry policies (`FAST_RETRY = { initial_delay: 0.01, max_delay: 0.05, multiplier: 1, timeout: 2 }`), a default 10-second session timeout, a default payload of `786_432` bytes (`3 * 262_144`), default chunk size of `262_144` bytes, and an `on_progress` callback appending each `Progress` struct to `@progress_records`.
+  * `phases` & `offsets`: Convenience accessors returning `@progress_records.map(&:phase)` and `@progress_records.map(&:bytes_uploaded)`.
   * `payload(size)`: Generates deterministic binary strings of arbitrary byte length for stream uploads.
   * `UnseekableStream`: Stream wrapper around `StringIO` that exposes `#read` and `#pos` while omitting `#seek` (`respond_to?(:seek)` is `false`).
   * **Diagnostic Trace Capture**: Buffers `DEBUG`-level driver logs in memory during each test run and dumps the full trace to `stderr` only if a test fails (or when `SHOWCASE_LOG` is set).
@@ -111,3 +112,20 @@ Tests standard, uninterrupted resumable upload workflows against `gapic-showcase
     * `Progress(phase: :uploading, bytes_uploaded: 786_432, total_bytes: nil)`
     * `Progress(phase: :finalizing, bytes_uploaded: 786_432, total_bytes: nil)`
     * `Progress(phase: :completed, bytes_uploaded: 786_432, total_bytes: 786_432)`
+
+### 2.2 Chunk Granularity Suite (`integration/resumable_upload/chunk_granularity_test.rb`)
+
+Tests dynamic chunk size resolution when the server mandates a byte alignment modulus via `X-Goog-Upload-Chunk-Granularity`.
+
+#### Case 1. Downward alignment to server granularity (`test_chunk_granularity_alignment`)
+* **Scenario**: Uploads a `1_000_000`-byte payload with `scenario: "chunk_granularity"`, an explicit unaligned user `chunk_size: 300_000`, and `timeout: 5`.
+* **Protocol Flow**:
+  1. `start` command initiates the session; Showcase returns `X-Goog-Upload-Chunk-Granularity: 256`.
+  2. Client resolves the effective chunk size down to the nearest multiple of 256: `300_000 - (300_000 % 256) = 299_776` bytes.
+  3. Chunks 1, 2, and 3 transmit `299_776` bytes each (`upload`), advancing confirmed offsets to `299_776`, `599_552`, and `899_328`.
+  4. Final chunk transmits the remaining `100_672` bytes (`899_328..999_999`) with `upload, finalize`.
+* **Assertions**:
+  * Returned JSON body reports `"size" == 1_000_000`.
+  * `offsets` equals `[0, 0, 299_776, 599_552, 899_328, 899_328, 1_000_000]`.
+  * `phases` equals `[:initiating, :uploading, :uploading, :uploading, :uploading, :finalizing, :completed]`.
+

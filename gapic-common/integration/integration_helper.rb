@@ -14,7 +14,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+require "json"
 require "logger"
+require "securerandom"
 require "stringio"
 require "minitest/autorun"
 require "minitest/focus"
@@ -29,6 +31,9 @@ require "gapic/rest/resumable_upload"
 #
 class ShowcaseIntegrationTest < Minitest::Test
   UPLOAD_PATH = "/resumable/upload/v1beta1/files:upload"
+  FAST_RETRY = { initial_delay: 0.01, max_delay: 0.05, multiplier: 1, timeout: 2 }.freeze
+  DEFAULT_CHUNK_SIZE = 262_144
+  DEFAULT_PAYLOAD_SIZE = DEFAULT_CHUNK_SIZE * 3
 
   ##
   # Stream double that intentionally does not implement #seek.
@@ -49,6 +54,14 @@ class ShowcaseIntegrationTest < Minitest::Test
 
   attr_reader :logger
   attr_reader :progress_records
+
+  def phases
+    @progress_records.map(&:phase)
+  end
+
+  def offsets
+    @progress_records.map(&:bytes_uploaded)
+  end
 
   def showcase_endpoint
     ENV["SHOWCASE_ENDPOINT"]
@@ -75,19 +88,38 @@ class ShowcaseIntegrationTest < Minitest::Test
 
   def showcase_client_stub
     Gapic::Rest::ClientStub.new(
-      endpoint: showcase_endpoint,
-      credentials: :dummy_credentials,
+      endpoint:             showcase_endpoint,
+      credentials:          :dummy_credentials,
       raise_faraday_errors: false,
-      logger: @logger
+      logger:               @logger
     )
   end
 
-  def build_config **overrides
+  def build_config scenario: nil, scenario_config: {}, **overrides
     @progress_records = []
+    headers = (overrides[:initial_headers] || {}).dup
+    if scenario
+      headers["X-Goog-Test-Scenario"] = scenario
+      headers["X-Goog-Test-Scenario-Config"] = JSON.generate(
+        { "client_uuid" => SecureRandom.uuid }.merge(scenario_config)
+      )
+    end
+
     defaults = {
-      initial_url: UPLOAD_PATH,
-      on_progress: ->(progress) { @progress_records << progress }
+      initial_url:                UPLOAD_PATH,
+      initial_headers:            headers,
+      start_retry_policy:         FAST_RETRY,
+      control_plane_retry_policy: FAST_RETRY,
+      data_plane_retry_policy:    FAST_RETRY,
+      timeout:                    10,
+      chunk_size:                 DEFAULT_CHUNK_SIZE,
+      on_progress:                ->(progress) { @progress_records << progress }
     }
-    Gapic::Rest::ResumableUpload::CompleteUploadConfig.new(**defaults, **overrides)
+    unless overrides.key? :stream
+      defaults[:stream] = StringIO.new payload(DEFAULT_PAYLOAD_SIZE)
+      defaults[:upload_size] = DEFAULT_PAYLOAD_SIZE
+    end
+
+    Gapic::Rest::ResumableUpload::CompleteUploadConfig.new(**defaults, **overrides, initial_headers: headers)
   end
 end
