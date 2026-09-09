@@ -105,12 +105,14 @@ module Gapic
             upload_status = Rules.header_value event.headers, "x-goog-upload-status"
             size_recv = Rules.header_value event.headers, "x-goog-upload-size-received"
             gran = Rules.header_value event.headers, "x-goog-upload-chunk-granularity"
+            err = event.error if event.respond_to? :error
             fields = {
               status:  event.status,
               headers: Abridge.headers(event.headers),
-              body:    event.status >= 400 ? Abridge.error_body(event.body) : Abridge.bytes(event.body)
+              body:    wire_receive_body(event, err)
             }
             fields[:uploadStatus] = upload_status if upload_status
+            fields[:errorStatus] = err.status if err&.status
             fields[:sizeReceived] = size_recv.to_i if size_recv
             fields[:granularity] = gran.to_i if gran
 
@@ -157,6 +159,12 @@ module Gapic
           end
 
           private
+
+          def wire_receive_body event, err
+            return Abridge.bytes event.body if event.status < 400
+
+            err&.message ? Abridge.error_body(err.message) : Abridge.error_body(event.body)
+          end
 
           def lifecycle_fields decision, config
             state = decision.next_state

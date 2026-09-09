@@ -378,8 +378,8 @@ module Gapic
           [next_state, instructions]
         end
 
-        def self.complete_cancellation state, _event, _config
-          err = Gapic::Common::UploadCancelledError.new
+        def self.complete_cancellation state, event, _config
+          err = UploadCancelledError.from event
           next_state = state.with status: :cancelled, in_flight_length: 0, last_error: err
           [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
@@ -399,7 +399,7 @@ module Gapic
         end
 
         def self.fail_with_deadline_exceeded state, _event, _config
-          err = Gapic::Common::DeadlineExceededError.new
+          err = DeadlineExceededError.new
           next_state = state.with(
             status:           :error,
             in_flight_length: 0,
@@ -409,7 +409,7 @@ module Gapic
         end
 
         def self.fail_with_rejected state, event, _config
-          err = Gapic::Common::UploadRejectedError.new event.body
+          err = UploadRejectedError.from event
           next_state = state.with(
             status:           :rejected,
             in_flight_length: 0,
@@ -419,7 +419,7 @@ module Gapic
         end
 
         def self.fail_with_bad_response state, event, _config
-          err = Gapic::Common::BadResponseError.new event.status
+          err = BadResponseError.from event
           next_state = state.with(
             status:           :error,
             in_flight_length: 0,

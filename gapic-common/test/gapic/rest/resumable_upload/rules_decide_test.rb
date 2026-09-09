@@ -228,7 +228,7 @@ class RulesDecideTest < Minitest::Test
     assert_equal :fail_with_deadline_exceeded, decision.recipe
     assert_equal :error, decision.next_state.status
     assert_recipe_progress_notification decision
-    assert_instance_of Gapic::Common::DeadlineExceededError, decision.next_state.last_error
+    assert_instance_of DeadlineExceededError, decision.next_state.last_error
   end
 
   def test_row_user_cancel
@@ -249,7 +249,7 @@ class RulesDecideTest < Minitest::Test
     assert_equal :fail_with_rejected, decision.recipe
     assert_equal :rejected, decision.next_state.status
     assert_recipe_progress_notification decision
-    assert_instance_of Gapic::Common::UploadRejectedError, decision.next_state.last_error
+    assert_instance_of UploadRejectedError, decision.next_state.last_error
   end
 
   def test_row_fail_with_bad_response
@@ -260,7 +260,7 @@ class RulesDecideTest < Minitest::Test
     assert_equal :fail_with_bad_response, decision.recipe
     assert_equal :error, decision.next_state.status
     assert_recipe_progress_notification decision
-    assert_instance_of Gapic::Common::BadResponseError, decision.next_state.last_error
+    assert_instance_of BadResponseError, decision.next_state.last_error
   end
 
   def test_row_fail_with_request_error

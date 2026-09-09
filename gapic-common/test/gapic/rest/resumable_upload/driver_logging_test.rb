@@ -44,7 +44,10 @@ class DriverLoggingTest < Minitest::Test
       _ = params
       _ = options
       @method_names << method_name
-      @responses.shift
+      resp = @responses.shift
+      raise resp if resp.is_a?(Exception) || (resp.is_a?(Class) && resp < Exception)
+
+      resp
     end
   end
 
@@ -161,7 +164,7 @@ class DriverLoggingTest < Minitest::Test
     )
 
     driver = Driver.new client_stub: stub, config: config, logger: recording
-    assert_raises Gapic::Common::UploadRejectedError do
+    assert_raises UploadRejectedError do
       driver.run
     end
 
@@ -270,5 +273,115 @@ class DriverLoggingTest < Minitest::Test
 
     driver = Driver.new client_stub: stub, config: config, logger: recording
     driver.run
+  end
+
+  def test_wire_receive_logs_error_status_and_abridged_error_message
+    recording = RecordingLogger.new
+    upload_log = Driver::UploadLog.new recording, upload_id: "test-upload-1"
+
+    err = Gapic::Rest::Error.new(
+      "#{Gapic::Rest::Error::REST_ERROR_PREFIX}: Permission denied on resource",
+      403,
+      status: "PERMISSION_DENIED"
+    )
+    event = Event::HttpResponse.new(
+      status:  403,
+      headers: { "x-goog-upload-status" => "final" },
+      body:    '{"raw":"error"}',
+      error:   err
+    )
+
+    upload_log.wire_receive event
+
+    debug_entries = recording.entries.select { |e| e.severity == Logger::DEBUG && e.message.message.include?("403") }
+    refute_empty debug_entries
+    fields = debug_entries.first.message.fields
+    assert_equal 403, fields["status"]
+    assert_equal "PERMISSION_DENIED", fields["errorStatus"]
+    assert_equal "#{Gapic::Rest::Error::REST_ERROR_PREFIX}: Permission denied on resource", fields["body"]
+  end
+
+  def test_wire_receive_fallback_body_when_error_absent
+    recording = RecordingLogger.new
+    upload_log = Driver::UploadLog.new recording, upload_id: "test-upload-2"
+
+    event = Event::HttpResponse.new(
+      status:  503,
+      headers: {},
+      body:    "Server unavailable",
+      error:   nil
+    )
+
+    upload_log.wire_receive event
+
+    debug_entries = recording.entries.select { |e| e.severity == Logger::DEBUG && e.message.message.include?("503") }
+    refute_empty debug_entries
+    fields = debug_entries.first.message.fields
+    assert_equal 503, fields["status"]
+    assert_nil fields["errorStatus"]
+    assert_equal "Server unavailable", fields["body"]
+  end
+
+  def test_lifecycle_warn_carries_rich_message_when_driver_fails
+    recording = RecordingLogger.new
+    wrapped_err = Gapic::Rest::Error.new(
+      "#{Gapic::Rest::Error::REST_ERROR_PREFIX}: Bucket access denied",
+      403,
+      status:  "PERMISSION_DENIED",
+      headers: { "x-goog-upload-status" => "final" }
+    )
+    stub = FakeStub.new [wrapped_err]
+    config = CompleteUploadConfig.new(
+      initial_url: "https://storage.googleapis.com/upload",
+      stream:      StringIO.new("data"),
+      upload_size: 4,
+      chunk_size:  256
+    )
+
+    driver = Driver.new client_stub: stub, config: config, logger: recording
+    err = assert_raises UploadRejectedError do
+      driver.run
+    end
+
+    assert_equal "Resumable upload failed with HTTP 403 Permission Denied: Bucket access denied", err.message
+
+    warn_entries = recording.entries.select { |e| e.severity == Logger::WARN }
+    refute_empty warn_entries
+    fail_warn = warn_entries.find { |e| e.message.fields["recipe"] == "fail_with_rejected" }
+    refute_nil fail_warn
+    assert_equal "Resumable upload failed with HTTP 403 Permission Denied: Bucket access denied",
+                 fail_warn.message.fields["error"]
+
+    debug_entries = recording.entries.select { |e| e.severity == Logger::DEBUG && e.message.message.include?("403") }
+    refute_empty debug_entries
+    wire_recv = debug_entries.first
+    assert_equal "PERMISSION_DENIED", wire_recv.message.fields["errorStatus"]
+  end
+
+  def test_driver_error_mapping_populates_error_on_rescue
+    stub = FakeStub.new []
+    config = CompleteUploadConfig.new(
+      initial_url: "https://storage.googleapis.com/upload",
+      stream:      StringIO.new("data"),
+      upload_size: 4,
+      chunk_size:  256
+    )
+    driver = Driver.new client_stub: stub, config: config
+
+    rest_err = Gapic::Rest::Error.new "Forbidden", 403, status: "PERMISSION_DENIED"
+    event = driver.send :rescue_request_error, rest_err
+    assert_instance_of Event::HttpResponse, event
+    assert_equal rest_err, event.error
+
+    faraday_err = Faraday::ClientError.new "Client error", {
+      status:  400,
+      headers: { "content-type" => "application/json" },
+      body:    '{"error":{"message":"Bad input","code":400,"status":"INVALID_ARGUMENT"}}'
+    }
+    faraday_event = driver.send :rescue_faraday_error, faraday_err
+    assert_instance_of Event::HttpResponse, faraday_event
+    assert_instance_of Gapic::Rest::Error, faraday_event.error
+    assert_equal 400, faraday_event.error.status_code
+    assert_equal "INVALID_ARGUMENT", faraday_event.error.status
   end
 end

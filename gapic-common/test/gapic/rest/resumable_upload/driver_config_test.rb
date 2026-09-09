@@ -135,7 +135,7 @@ class DriverConfigTest < Minitest::Test
     # Stub monotonic clock so that initial check sets deadline at t=105, and subsequent checks read t=110
     clock_ticks = [100.0, 110.0, 110.0]
     Process.stub :clock_gettime, ->(_clock_id) { clock_ticks.shift || 110.0 } do
-      assert_raises Gapic::Common::DeadlineExceededError do
+      assert_raises DeadlineExceededError do
         driver.run
       end
     end
@@ -167,7 +167,7 @@ class DriverConfigTest < Minitest::Test
     driver = Driver.new client_stub: stub, config: config
 
     Process.stub :clock_gettime, ->(_clock_id) { current_time } do
-      assert_raises Gapic::Common::DeadlineExceededError do
+      assert_raises DeadlineExceededError do
         driver.run
       end
     end

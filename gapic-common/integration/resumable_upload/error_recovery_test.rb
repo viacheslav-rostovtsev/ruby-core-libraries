@@ -135,7 +135,7 @@ class ErrorRecoveryTest < ShowcaseIntegrationTest
       config:      config
     )
 
-    assert_raises Gapic::Common::DeadlineExceededError do
+    assert_raises Gapic::Rest::ResumableUpload::DeadlineExceededError do
       driver.run
     end
 

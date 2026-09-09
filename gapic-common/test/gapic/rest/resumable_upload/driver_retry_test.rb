@@ -88,7 +88,7 @@ class DriverRetryTest < Minitest::Test
     )
 
     driver = Driver.new client_stub: stub, config: config
-    err = assert_raises Gapic::Common::BadResponseError do
+    err = assert_raises BadResponseError do
       driver.run
     end
 

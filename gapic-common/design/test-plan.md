@@ -135,6 +135,10 @@ flowchart TD
   * Session rejection (`:response_rejected` $\rightarrow$ `UploadRejectedError`), fatal bad responses (`:response_fatal_bad_response` $\rightarrow$ `BadResponseError`).
   * Non-recoverable request failures: `:request_retries_exhausted` in `:transmission_sending`, and `:request_timeout` in `:starting` or `:recovery`.
   * Global deadline expiration: `:global_deadline_exceeded` $\rightarrow$ `DeadlineExceededError`.
+* **Actionable description and metadata propagation**:
+  * Wrapped errors (`event.error`) de-prefix `Gapic::Rest::Error::REST_ERROR_PREFIX` and format as `"Resumable upload failed with HTTP #{status_code} #{status_name}: #{inner_message}"`.
+  * Preserves `status_code`, `status`, `details`/`status_details`, `headers`/`header`, and `response_body` (on `UploadRejectedError`) end-to-end.
+  * Fallback without `event.error` names the HTTP status code and status, appending detailed header `(X-Goog-Upload-Status: '...')`.
 * **Actionable description on unexpected HTTP response**:
   * Unmatched event (HTTP 200 `Status: final` while in `:transmission_sending`) raises `InvalidTransitionError` with human phrasing (`"Resumable upload failed while sending a chunk of data: received an unexpected HTTP 200 response (X-Goog-Upload-Status: 'final')."`) and attaches `err.response`, `err.event`, `err.state`.
 * **Missing status header formatting in error**:
@@ -227,7 +231,7 @@ flowchart TD
 * **Size-proportional timeout above base floor**: Large `upload_size` computes timeout as `upload_size.fdiv(MIN_ASSUMED_THROUGHPUT)`.
 * **Base timeout floor for small uploads**: Small `upload_size` floors at `BASE_TIMEOUT` (`3_600` seconds).
 * **Default base timeout when size is nil**: Unspecified `upload_size` defaults to `BASE_TIMEOUT`.
-* **Deadline expiration enforcement**: Monotonic clock exceeding `@deadline` during `Driver#run` triggers `Event::GlobalDeadlineExceeded` and raises `Gapic::Common::DeadlineExceededError`.
+* **Deadline expiration enforcement**: Monotonic clock exceeding `@deadline` during `Driver#run` triggers `Event::GlobalDeadlineExceeded` and raises `Gapic::Rest::ResumableUpload::DeadlineExceededError`.
 
 ---
 
@@ -260,7 +264,7 @@ flowchart TD
   * Asserts silent recipes (`:ignore_duplicate_cancel`, `:ack_chunk`) emit no lifecycle log entries.
 * **Wire trace logging (`wire_send`, `wire_receive`, `wire_failure`)**:
   * `wire_send` logs `DEBUG` with HTTP verb, abridged URL, redacted headers, `startAttempt`, `bodySize`, and hex-encoded/abridged body.
-  * `wire_receive` logs `DEBUG` with HTTP status code, parsed `uploadStatus`, `sizeReceived`, `granularity`, and hex body.
+  * `wire_receive` logs `DEBUG` with HTTP status code, parsed `uploadStatus`, optional `errorStatus` from `event.error.status`, `sizeReceived`, `granularity`, and abridged body (using `event.error.message` when HTTP $\ge 400$ and present).
   * `wire_failure` logs `DEBUG` with failure classification `kind` and exception message.
 * **Buffer realignment logging (`UploadLog#buffer_realign`)**:
   * Logs `DEBUG` on normal realignment and additionally emits a `WARN` entry (`"Server offset rewind on unseekable stream"`) with `action`, `serverOffset`, and `currentOffset` when rewinding an unseekable stream.

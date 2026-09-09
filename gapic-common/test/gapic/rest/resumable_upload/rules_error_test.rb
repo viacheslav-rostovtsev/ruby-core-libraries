@@ -41,7 +41,8 @@ class RulesErrorTest < Minitest::Test
     next_state, instructions = Rules.step state, resp, @config
 
     assert_equal :rejected, next_state.status
-    assert_instance_of Gapic::Common::UploadRejectedError, next_state.last_error
+    assert_instance_of UploadRejectedError, next_state.last_error
+    assert_equal "Forbidden", next_state.last_error.response_body
     assert_equal 1, instructions.size
     assert_instance_of Instruction::TerminateFailure, instructions.first
     assert_equal next_state.last_error, instructions.first.error
@@ -53,7 +54,7 @@ class RulesErrorTest < Minitest::Test
     next_state, instructions = Rules.step state, resp, @config
 
     assert_equal :error, next_state.status
-    assert_instance_of Gapic::Common::BadResponseError, next_state.last_error
+    assert_instance_of BadResponseError, next_state.last_error
     assert_equal 400, next_state.last_error.status_code
     assert_equal 1, instructions.size
     assert_instance_of Instruction::TerminateFailure, instructions.first
@@ -119,7 +120,7 @@ class RulesErrorTest < Minitest::Test
     next_state, instructions = Rules.step state, Event::GlobalDeadlineExceeded.new, @config
 
     assert_equal :error, next_state.status
-    assert_instance_of Gapic::Common::DeadlineExceededError, next_state.last_error
+    assert_instance_of DeadlineExceededError, next_state.last_error
     assert_equal 1, instructions.size
     assert_instance_of Instruction::TerminateFailure, instructions.first
   end
@@ -169,5 +170,92 @@ class RulesErrorTest < Minitest::Test
     assert_equal :starting, err.state
     assert_equal event, err.event
     assert_nil err.response
+  end
+
+  def test_rejected_with_wrapped_error_deprefixes_message_and_preserves_metadata
+    details = [{ "reason" => "ACCESS_DENIED" }]
+    headers = { "x-goog-upload-status" => "final", "content-type" => "application/json" }
+    wrapped_err = Gapic::Rest::Error.new(
+      "#{Gapic::Rest::Error::REST_ERROR_PREFIX}: The caller does not have permission",
+      403,
+      status:  "PERMISSION_DENIED",
+      details: details,
+      headers: headers
+    )
+    resp = Event::HttpResponse.new(
+      status:  403,
+      headers: headers,
+      body:    '{"error":{"message":"The caller does not have permission"}}',
+      error:   wrapped_err
+    )
+
+    state = State.new status: :starting
+    next_state, instructions = Rules.step state, resp, @config
+
+    assert_equal :rejected, next_state.status
+    err = next_state.last_error
+    assert_instance_of UploadRejectedError, err
+    assert_equal "Resumable upload failed with HTTP 403 Permission Denied: The caller does not have permission",
+                 err.message
+    assert_equal 403, err.status_code
+    assert_equal "PERMISSION_DENIED", err.status
+    assert_equal details, err.details
+    assert_equal details, err.status_details
+    assert_equal headers, err.headers
+    assert_equal headers, err.header
+    assert_equal '{"error":{"message":"The caller does not have permission"}}', err.response_body
+    assert_equal err, instructions.first.error
+  end
+
+  def test_rejected_fallback_without_wrapped_error
+    resp = Event::HttpResponse.new status: 403, headers: { "x-goog-upload-status" => "final" }, body: "Forbidden"
+    state = State.new status: :starting
+    next_state, _instructions = Rules.step state, resp, @config
+
+    assert_equal :rejected, next_state.status
+    err = next_state.last_error
+    assert_instance_of UploadRejectedError, err
+    assert_equal "Resumable upload failed with HTTP 403 Forbidden (X-Goog-Upload-Status: 'final')", err.message
+    assert_equal 403, err.status_code
+    assert_equal "Forbidden", err.response_body
+  end
+
+  def test_bad_response_with_wrapped_error_deprefixes_message_and_preserves_metadata
+    details = ["Quota limit details"]
+    headers = { "x-goog-upload-status" => "active" }
+    wrapped_err = Gapic::Rest::Error.new(
+      "#{Gapic::Rest::Error::REST_ERROR_PREFIX}: Quota limit reached",
+      429,
+      status:  "RESOURCE_EXHAUSTED",
+      details: details,
+      headers: headers
+    )
+    resp = Event::HttpResponse.new status: 429, headers: headers, body: "Too many requests", error: wrapped_err
+
+    state = State.new status: :starting
+    next_state, _instructions = Rules.step state, resp, @config
+
+    assert_equal :error, next_state.status
+    err = next_state.last_error
+    assert_instance_of BadResponseError, err
+    assert_equal "Resumable upload failed with HTTP 429 Resource Exhausted: Quota limit reached", err.message
+    assert_equal 429, err.status_code
+    assert_equal "RESOURCE_EXHAUSTED", err.status
+    assert_equal details, err.status_details
+    assert_equal headers, err.headers
+    assert_equal "Too many requests", err.response_body
+  end
+
+  def test_bad_response_fallback_without_wrapped_error
+    resp = Event::HttpResponse.new status: 503, headers: {}, body: "Service unavailable"
+    state = State.new status: :starting
+    next_state, _instructions = Rules.step state, resp, @config
+
+    assert_equal :error, next_state.status
+    err = next_state.last_error
+    assert_instance_of BadResponseError, err
+    assert_equal "Resumable upload failed with HTTP 503 Service Unavailable (X-Goog-Upload-Status: missing)", err.message
+    assert_equal 503, err.status_code
+    assert_equal "Service unavailable", err.response_body
   end
 end

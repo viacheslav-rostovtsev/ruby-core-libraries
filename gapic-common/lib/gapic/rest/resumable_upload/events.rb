@@ -38,11 +38,11 @@ module Gapic
         end
 
         ##
-        # Signals a completed HTTP exchange over the wire (status, headers, body).
+        # Signals a completed HTTP exchange over the wire (status, headers, body, error).
         #
-        HttpResponse = Data.define :status, :headers, :body do
-          def initialize status:, headers: {}, body: nil
-            super status: status, headers: headers || {}, body: body
+        HttpResponse = Data.define :status, :headers, :body, :error do
+          def initialize status:, headers: {}, body: nil, error: nil
+            super status: status, headers: headers || {}, body: body, error: error
           end
         end
 

@@ -307,8 +307,9 @@ module Gapic
             status_hdr = Rules.header_value event.headers, "x-goog-upload-status"
             return event unless status_hdr.nil? || status_hdr.empty?
 
-            err = Gapic::Common::BadResponseError.new event.status,
-                                                      "Missing X-Goog-Upload-Status header in start response"
+            err = BadResponseError.new "Missing X-Goog-Upload-Status header in start response",
+                                       event.status,
+                                       headers: event.headers
             can_retry = policy.send(:retry_with_deadline?) && policy.call(event)
             unless can_retry
               failed_event = Event::RequestFailed.new kind: :retries_exhausted, message: err.message, source_error: err
@@ -404,7 +405,8 @@ module Gapic
             Event::RequestFailed.new kind: :timeout, message: err.message, source_error: err
           when Gapic::Rest::Error
             if err.status_code
-              Event::HttpResponse.new status: err.status_code, headers: err.headers || {}, body: err.message
+              Event::HttpResponse.new status: err.status_code, headers: err.headers || {}, body: err.message,
+                                      error: err
             else
               Event::RequestFailed.new kind: :connection_failed, message: err.message, source_error: err
             end
@@ -417,10 +419,12 @@ module Gapic
 
         def rescue_faraday_error err
           if err.response && err.response[:status]
+            rest_err = Gapic::Rest::Error.wrap_faraday_error err
             Event::HttpResponse.new(
               status:  err.response[:status],
               headers: err.response[:headers] || {},
-              body:    err.response[:body]
+              body:    err.response[:body],
+              error:   rest_err
             )
           elsif err.is_a? Faraday::TimeoutError
             Event::RequestFailed.new kind: :timeout, message: err.message, source_error: err

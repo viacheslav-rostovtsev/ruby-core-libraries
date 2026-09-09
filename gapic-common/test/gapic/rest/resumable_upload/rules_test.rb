@@ -182,7 +182,7 @@ class RulesTest < Minitest::Test
     resp = Event::HttpResponse.new status: 200, headers: { "x-goog-upload-status" => "cancelled" }
     final_state, final_instructions = Rules.step next_state, resp, @config
     assert_equal :cancelled, final_state.status
-    assert_instance_of Gapic::Common::UploadCancelledError, final_state.last_error
+    assert_instance_of UploadCancelledError, final_state.last_error
     assert_equal 1, final_instructions.size
     assert_instance_of Instruction::TerminateFailure, final_instructions.first
   end
