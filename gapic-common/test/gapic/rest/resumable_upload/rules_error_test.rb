@@ -195,7 +195,7 @@ class RulesErrorTest < Minitest::Test
     assert_equal :rejected, next_state.status
     err = next_state.last_error
     assert_instance_of UploadRejectedError, err
-    assert_equal "Resumable upload failed with HTTP 403 Permission Denied: The caller does not have permission",
+    assert_equal "Upload rejected by server with HTTP 403 Permission Denied: The caller does not have permission",
                  err.message
     assert_equal 403, err.status_code
     assert_equal "PERMISSION_DENIED", err.status
@@ -215,7 +215,7 @@ class RulesErrorTest < Minitest::Test
     assert_equal :rejected, next_state.status
     err = next_state.last_error
     assert_instance_of UploadRejectedError, err
-    assert_equal "Resumable upload failed with HTTP 403 Forbidden (X-Goog-Upload-Status: 'final')", err.message
+    assert_equal "Upload rejected by server with HTTP 403 Forbidden (X-Goog-Upload-Status: 'final')", err.message
     assert_equal 403, err.status_code
     assert_equal "Forbidden", err.response_body
   end
@@ -257,5 +257,16 @@ class RulesErrorTest < Minitest::Test
     assert_equal "Resumable upload failed with HTTP 503 Service Unavailable (X-Goog-Upload-Status: missing)", err.message
     assert_equal 503, err.status_code
     assert_equal "Service unavailable", err.response_body
+  end
+
+  def test_error_class_inheritance_hierarchy
+    assert_operator UploadCancelledError, :<, Gapic::Common::Error
+    refute_operator UploadCancelledError, :<, Gapic::Rest::Error
+
+    assert_operator DeadlineExceededError, :<, Gapic::Common::Error
+    refute_operator DeadlineExceededError, :<, Gapic::Rest::Error
+
+    assert_operator UploadRejectedError, :<, Gapic::Rest::Error
+    assert_operator BadResponseError, :<, Gapic::Rest::Error
   end
 end

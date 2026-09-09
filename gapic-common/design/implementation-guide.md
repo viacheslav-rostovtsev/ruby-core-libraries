@@ -397,21 +397,22 @@ The implementation distinguishes three categories of network and protocol-level 
 *   **Resolution**: Core transitions to `:rejected` or `:error` and emits `Instruction::TerminateFailure`.
 
 #### 6.1.4 Actionable Terminal Errors & Metadata Propagation
-Terminal errors subclass `Gapic::Rest::Error` (or `Gapic::Rest::DeadlineExceededError`) so downstream SDK callers can inspect HTTP error metadata:
+Terminal errors provide actionable context so downstream SDK callers can inspect error metadata:
 *   **Error Classes**:
     *   `BadResponseError < Gapic::Rest::Error`: Unrecoverable non-2xx HTTP responses or invalid payloads. Retains `attr_reader :response_body` returning `event.body`.
     *   `UploadRejectedError < Gapic::Rest::Error`: Backend explicitly rejected the session with `X-Goog-Upload-Status: final`. Retains `attr_reader :response_body` returning `event.body`.
-    *   `UploadCancelledError < Gapic::Rest::Error`: Upload session cancelled by caller.
-    *   `DeadlineExceededError < Gapic::Rest::DeadlineExceededError`: Upload deadline exceeded with optional root cause.
+    *   `UploadCancelledError < Gapic::Common::Error`: Upload session cancelled by caller.
+    *   `DeadlineExceededError < Gapic::Common::Error`: Upload deadline exceeded with optional root cause (`attr_reader :root_cause`).
 *   **Metadata Sourcing & De-prefixing**:
     *   When `event.error` is present (from `Gapic::Rest::Error.wrap_faraday_error`), factories source `status_code`, `status`, `details`/`status_details`, and `headers`/`header`.
     *   The prefix literal `Gapic::Rest::Error::REST_ERROR_PREFIX` (`"An error has occurred when making a REST request"`) is stripped from `event.error.message` to avoid redundant prefixes.
     *   The resulting actionable message follows the format:
-        `"Resumable upload failed with HTTP #{status_code} #{status_name}: #{inner_message}"`
-        (e.g., `"Resumable upload failed with HTTP 403 Permission Denied: The caller does not have permission"`).
+        *   For `UploadRejectedError`: `"Upload rejected by server with HTTP #{status_code} #{status_name}: #{inner_message}"` (e.g., `"Upload rejected by server with HTTP 403 Permission Denied: The caller does not have permission"`).
+        *   For `BadResponseError`: `"Resumable upload failed with HTTP #{status_code} #{status_name}: #{inner_message}"` (e.g., `"Resumable upload failed with HTTP 429 Resource Exhausted: Quota limit reached"`).
 *   **Fallback Formatting**:
     *   When `event.error` is absent, factories fall back to `event.status` and `event.headers`, naming the status and including the detailed `X-Goog-Upload-Status` header:
-        `"Resumable upload failed with HTTP #{event.status} #{status_name} (X-Goog-Upload-Status: #{upload_status_desc})"`.
+        *   For `UploadRejectedError`: `"Upload rejected by server with HTTP #{event.status} #{status_name} (X-Goog-Upload-Status: 'final')"`.
+        *   For `BadResponseError`: `"Resumable upload failed with HTTP #{event.status} #{status_name} (X-Goog-Upload-Status: #{upload_status_desc})"`.
     *   `response_body` on `BadResponseError` and `UploadRejectedError` returns `event.body`.
 
 ### 6.2 Recovery and Buffer Alignment

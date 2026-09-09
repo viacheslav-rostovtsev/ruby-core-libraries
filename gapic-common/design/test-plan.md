@@ -134,10 +134,13 @@ flowchart TD
 * **Terminal failures (`:rejected` / `:error`)**:
   * Session rejection (`:response_rejected` $\rightarrow$ `UploadRejectedError`), fatal bad responses (`:response_fatal_bad_response` $\rightarrow$ `BadResponseError`).
   * Non-recoverable request failures: `:request_retries_exhausted` in `:transmission_sending`, and `:request_timeout` in `:starting` or `:recovery`.
-  * Global deadline expiration: `:global_deadline_exceeded` $\rightarrow$ `DeadlineExceededError`.
+  * Global deadline expiration: `:global_deadline_exceeded` $\rightarrow$ `DeadlineExceededError < Gapic::Common::Error`.
+  * Session cancellation: `:complete_cancellation` $\rightarrow$ `UploadCancelledError < Gapic::Common::Error`.
 * **Actionable description and metadata propagation**:
-  * Wrapped errors (`event.error`) de-prefix `Gapic::Rest::Error::REST_ERROR_PREFIX` and format as `"Resumable upload failed with HTTP #{status_code} #{status_name}: #{inner_message}"`.
-  * Preserves `status_code`, `status`, `details`/`status_details`, `headers`/`header`, and `response_body` (on `UploadRejectedError`) end-to-end.
+  * Wrapped errors (`event.error`) de-prefix `Gapic::Rest::Error::REST_ERROR_PREFIX` and format with appropriate prefixes:
+    * `UploadRejectedError`: `"Upload rejected by server with HTTP #{status_code} #{status_name}: #{inner_message}"`.
+    * `BadResponseError`: `"Resumable upload failed with HTTP #{status_code} #{status_name}: #{inner_message}"`.
+  * Preserves `status_code`, `status`, `details`/`status_details`, `headers`/`header`, and `response_body` (on `UploadRejectedError` and `BadResponseError`) end-to-end.
   * Fallback without `event.error` names the HTTP status code and status, appending detailed header `(X-Goog-Upload-Status: '...')`.
 * **Actionable description on unexpected HTTP response**:
   * Unmatched event (HTTP 200 `Status: final` while in `:transmission_sending`) raises `InvalidTransitionError` with human phrasing (`"Resumable upload failed while sending a chunk of data: received an unexpected HTTP 200 response (X-Goog-Upload-Status: 'final')."`) and attaches `err.response`, `err.event`, `err.state`.

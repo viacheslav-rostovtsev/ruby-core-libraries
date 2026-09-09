@@ -218,66 +218,10 @@ class DriverLoggingTest < Minitest::Test
     assert_operator corpus.bytesize, :<, 65_536
   end
 
-  private
-
-  def run_two_chunk_upload_with_secret recording
-    chunk_size = 8 * 1024 * 1024
-    secret = "SECRET-123456"
-    binary_prefix = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09".b
-
-    half = (chunk_size / 2) - 10
-    chunk1 = binary_prefix + ("A" * half) + secret + ("A" * (chunk_size - 10 - half - secret.bytesize))
-    chunk2 = binary_prefix + ("A" * (chunk_size - 10))
-    stream_data = chunk1 + chunk2
-
-    responses = [
-      FakeResponse.new(
-        200,
-        {
-          "X-Goog-Upload-Status" => "active",
-          "X-Goog-Upload-URL"    => "https://storage.googleapis.com/session?sid=#{secret}"
-        },
-        ""
-      ),
-      FakeResponse.new(
-        200,
-        {
-          "X-Goog-Upload-Status"        => "active",
-          "X-Goog-Upload-Size-Received" => chunk_size.to_s
-        },
-        ""
-      ),
-      FakeResponse.new(
-        200,
-        {
-          "X-Goog-Upload-Status"        => "active",
-          "X-Goog-Upload-Size-Received" => (chunk_size * 2).to_s
-        },
-        ""
-      ),
-      FakeResponse.new(
-        200,
-        { "X-Goog-Upload-Status" => "final" },
-        "done"
-      )
-    ]
-
-    stub = FakeStub.new responses
-    config = CompleteUploadConfig.new(
-      initial_url:     "https://storage.googleapis.com/upload?token=#{secret}",
-      initial_headers: { "Authorization" => "Bearer #{secret}" },
-      stream:          StringIO.new(stream_data),
-      upload_size:     stream_data.bytesize,
-      chunk_size:      chunk_size
-    )
-
-    driver = Driver.new client_stub: stub, config: config, logger: recording
-    driver.run
-  end
-
   def test_wire_receive_logs_error_status_and_abridged_error_message
     recording = RecordingLogger.new
-    upload_log = Driver::UploadLog.new recording, upload_id: "test-upload-1"
+    stub_logger = Gapic::LoggingConcerns::StubLogger.new logger: recording, service: "ResumableUpload"
+    upload_log = Driver::UploadLog.new stub_logger, upload_id: "test-upload-1"
 
     err = Gapic::Rest::Error.new(
       "#{Gapic::Rest::Error::REST_ERROR_PREFIX}: Permission denied on resource",
@@ -303,7 +247,8 @@ class DriverLoggingTest < Minitest::Test
 
   def test_wire_receive_fallback_body_when_error_absent
     recording = RecordingLogger.new
-    upload_log = Driver::UploadLog.new recording, upload_id: "test-upload-2"
+    stub_logger = Gapic::LoggingConcerns::StubLogger.new logger: recording, service: "ResumableUpload"
+    upload_log = Driver::UploadLog.new stub_logger, upload_id: "test-upload-2"
 
     event = Event::HttpResponse.new(
       status:  503,
@@ -343,13 +288,13 @@ class DriverLoggingTest < Minitest::Test
       driver.run
     end
 
-    assert_equal "Resumable upload failed with HTTP 403 Permission Denied: Bucket access denied", err.message
+    assert_equal "Upload rejected by server with HTTP 403 Permission Denied: Bucket access denied", err.message
 
     warn_entries = recording.entries.select { |e| e.severity == Logger::WARN }
     refute_empty warn_entries
     fail_warn = warn_entries.find { |e| e.message.fields["recipe"] == "fail_with_rejected" }
     refute_nil fail_warn
-    assert_equal "Resumable upload failed with HTTP 403 Permission Denied: Bucket access denied",
+    assert_equal "Upload rejected by server with HTTP 403 Permission Denied: Bucket access denied",
                  fail_warn.message.fields["error"]
 
     debug_entries = recording.entries.select { |e| e.severity == Logger::DEBUG && e.message.message.include?("403") }
@@ -416,10 +361,10 @@ class DriverLoggingTest < Minitest::Test
 
   def test_lifecycle_warn_includes_response_body_for_bad_response_error
     recording = RecordingLogger.new
-    raw_body = "<html>Bad gateway</html>"
-    faraday_err = Faraday::ClientError.new "Server error", {
-      status:  502,
-      headers: {},
+    raw_body = '{"error":{"message":"Invalid input","code":400}}'
+    faraday_err = Faraday::ClientError.new "Client error", {
+      status:  400,
+      headers: { "x-goog-upload-status" => "active" },
       body:    raw_body
     }
     stub = FakeStub.new [faraday_err]
@@ -445,9 +390,10 @@ class DriverLoggingTest < Minitest::Test
 
   def test_lifecycle_warn_omits_response_body_when_error_lacks_it
     recording = RecordingLogger.new
-    upload_log = Driver::UploadLog.new recording, upload_id: "test-upload-no-body"
-    state = State.initial.with(
-      status:     :failed,
+    stub_logger = Gapic::LoggingConcerns::StubLogger.new logger: recording, service: "ResumableUpload"
+    upload_log = Driver::UploadLog.new stub_logger, upload_id: "test-upload-no-body"
+    state = State.new(
+      status:     :error,
       last_error: DeadlineExceededError.new("Upload deadline exceeded")
     )
     decision = Decision.new(
@@ -470,5 +416,62 @@ class DriverLoggingTest < Minitest::Test
     refute_nil fail_warn
     assert_equal "Upload deadline exceeded", fail_warn.message.fields["error"]
     assert_nil fail_warn.message.fields["responseBody"]
+  end
+
+  private
+
+  def run_two_chunk_upload_with_secret recording
+    chunk_size = 8 * 1024 * 1024
+    secret = "SECRET-123456"
+    binary_prefix = "\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09".b
+
+    half = (chunk_size / 2) - 10
+    chunk1 = binary_prefix + ("A" * half) + secret + ("A" * (chunk_size - 10 - half - secret.bytesize))
+    chunk2 = binary_prefix + ("A" * (chunk_size - 10))
+    stream_data = chunk1 + chunk2
+
+    responses = [
+      FakeResponse.new(
+        200,
+        {
+          "X-Goog-Upload-Status" => "active",
+          "X-Goog-Upload-URL"    => "https://storage.googleapis.com/session?sid=#{secret}"
+        },
+        ""
+      ),
+      FakeResponse.new(
+        200,
+        {
+          "X-Goog-Upload-Status"        => "active",
+          "X-Goog-Upload-Size-Received" => chunk_size.to_s
+        },
+        ""
+      ),
+      FakeResponse.new(
+        200,
+        {
+          "X-Goog-Upload-Status"        => "active",
+          "X-Goog-Upload-Size-Received" => (chunk_size * 2).to_s
+        },
+        ""
+      ),
+      FakeResponse.new(
+        200,
+        { "X-Goog-Upload-Status" => "final" },
+        "done"
+      )
+    ]
+
+    stub = FakeStub.new responses
+    config = CompleteUploadConfig.new(
+      initial_url:     "https://storage.googleapis.com/upload?token=#{secret}",
+      initial_headers: { "Authorization" => "Bearer #{secret}" },
+      stream:          StringIO.new(stream_data),
+      upload_size:     stream_data.bytesize,
+      chunk_size:      chunk_size
+    )
+
+    driver = Driver.new client_stub: stub, config: config, logger: recording
+    driver.run
   end
 end

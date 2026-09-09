@@ -64,17 +64,17 @@ module Gapic
             msg.empty? ? nil : msg
           end
 
-          def build_attributes source
+          def build_attributes source, prefix: "Resumable upload failed"
             if source.respond_to?(:error) && source.error
-              build_from_wrapped_error source
+              build_from_wrapped_error source, prefix: prefix
             elsif source.is_a? Gapic::Rest::Error
-              build_from_rest_error source
+              build_from_rest_error source, prefix: prefix
             elsif source.respond_to? :status
-              build_from_http_event source
+              build_from_http_event source, prefix: prefix
             elsif source.is_a? Integer
               status_name = HTTP_STATUS_PHRASES[source]
               status_part = status_name ? " #{status_name}" : ""
-              ["Resumable upload failed with HTTP #{source}#{status_part}".strip, source, nil, nil, nil]
+              ["#{prefix} with HTTP #{source}#{status_part}".strip, source, nil, nil, nil]
             else
               [source.to_s, nil, nil, nil, nil]
             end
@@ -82,7 +82,7 @@ module Gapic
 
           private
 
-          def build_from_wrapped_error source
+          def build_from_wrapped_error source, prefix:
             err = source.error
             status_code = err.status_code || (source.respond_to?(:status) ? source.status : nil)
             status = err.status
@@ -90,36 +90,36 @@ module Gapic
             status_part = status_name ? " #{status_name}" : ""
             inner_msg = clean_message err.message
             msg = if inner_msg
-                    "Resumable upload failed with HTTP #{status_code}#{status_part}: #{inner_msg}"
+                    "#{prefix} with HTTP #{status_code}#{status_part}: #{inner_msg}"
                   else
-                    "Resumable upload failed with HTTP #{status_code}#{status_part}"
+                    "#{prefix} with HTTP #{status_code}#{status_part}"
                   end
             headers = err.headers || (source.respond_to?(:headers) ? source.headers : nil)
             [msg, status_code, status, err.details, headers]
           end
 
-          def build_from_rest_error source
+          def build_from_rest_error source, prefix:
             status_code = source.status_code
             status = source.status
             status_name = format_status(status) || HTTP_STATUS_PHRASES[status_code]
             status_part = status_name ? " #{status_name}" : ""
             inner_msg = clean_message source.message
             msg = if inner_msg
-                    "Resumable upload failed with HTTP #{status_code}#{status_part}: #{inner_msg}"
+                    "#{prefix} with HTTP #{status_code}#{status_part}: #{inner_msg}"
                   else
-                    "Resumable upload failed with HTTP #{status_code}#{status_part}"
+                    "#{prefix} with HTTP #{status_code}#{status_part}"
                   end
             [msg, status_code, status, source.details, source.headers]
           end
 
-          def build_from_http_event source
+          def build_from_http_event source, prefix:
             status_code = source.status
             headers = source.respond_to?(:headers) && source.headers ? source.headers : {}
             upload_status = headers["x-goog-upload-status"] || headers["X-Goog-Upload-Status"]
             status_desc = upload_status ? "'#{upload_status}'" : "missing"
             status_name = HTTP_STATUS_PHRASES[status_code]
             status_part = status_name ? " #{status_name}" : ""
-            msg = "Resumable upload failed with HTTP #{status_code}#{status_part} " \
+            msg = "#{prefix} with HTTP #{status_code}#{status_part} " \
                   "(X-Goog-Upload-Status: #{status_desc})"
             [msg, status_code, nil, nil, headers]
           end
@@ -206,16 +206,17 @@ module Gapic
         def initialize message = nil, status_code = nil, status: nil, details: nil, headers: nil, response_body: nil
           @response_body = response_body
           if status_code.nil? && response_body.nil? && message &&
-             !message.start_with?("Resumable upload failed", "Upload was rejected")
+             !message.start_with?("Upload rejected by server")
             @response_body = message
-            message = "Upload was rejected by server: #{message}"
+            message = "Upload rejected by server: #{message}"
           end
           super message, status_code, status: status, details: details, headers: headers
         end
 
         def self.from source, response_body: nil
           body = response_body || (source.respond_to?(:body) ? source.body : nil)
-          message, status_code, status, details, headers = ErrorBuilder.build_attributes source
+          message, status_code, status, details, headers =
+            ErrorBuilder.build_attributes source, prefix: "Upload rejected by server"
           new message, status_code, status: status, details: details, headers: headers, response_body: body
         end
       end
@@ -223,19 +224,14 @@ module Gapic
       ##
       # Raised when the upload session is cancelled.
       #
-      class UploadCancelledError < Gapic::Rest::Error
-        def initialize message = "Upload session was cancelled", status_code = nil, status: nil, details: nil,
-                       headers: nil
-          super message, status_code, status: status, details: details, headers: headers
+      class UploadCancelledError < Gapic::Common::Error
+        def initialize message = "Upload session was cancelled"
+          super message
         end
 
-        def self.from source
-          if source.respond_to? :status
-            new "Upload session was cancelled", source.status,
-                headers: (source.respond_to?(:headers) ? source.headers : nil)
-          elsif source.is_a? Gapic::Rest::Error
-            new source.message, source.status_code, status: source.status, details: source.details,
-                headers: source.headers
+        def self.from source = nil
+          if source.is_a?(String) && !source.empty?
+            new source
           else
             new
           end
@@ -245,10 +241,13 @@ module Gapic
       ##
       # Raised when an upload exceeds its global monotonic deadline.
       #
-      class DeadlineExceededError < Gapic::Rest::DeadlineExceededError
-        def initialize message = "Upload deadline exceeded", status_code = nil, status: nil, details: nil,
-                       headers: nil, root_cause: nil
-          super message, status_code, status: status, details: details, headers: headers, root_cause: root_cause
+      class DeadlineExceededError < Gapic::Common::Error
+        # @return [Object, nil] Root cause exception if deadline exceeded during a retry loop
+        attr_reader :root_cause
+
+        def initialize message = "Upload deadline exceeded", root_cause: nil
+          super message
+          @root_cause = root_cause
         end
       end
     end
