@@ -384,4 +384,91 @@ class DriverLoggingTest < Minitest::Test
     assert_equal 400, faraday_event.error.status_code
     assert_equal "INVALID_ARGUMENT", faraday_event.error.status
   end
+
+  def test_lifecycle_warn_includes_response_body_for_rejected_error
+    recording = RecordingLogger.new
+    raw_body = '{"error":{"code":403,"message":"Rejected by backend"}}'
+    faraday_err = Faraday::ClientError.new "Client error", {
+      status:  403,
+      headers: { "x-goog-upload-status" => "final" },
+      body:    raw_body
+    }
+    stub = FakeStub.new [faraday_err]
+    config = CompleteUploadConfig.new(
+      initial_url: "https://storage.googleapis.com/upload",
+      stream:      StringIO.new("data"),
+      upload_size: 4,
+      chunk_size:  256
+    )
+
+    driver = Driver.new client_stub: stub, config: config, logger: recording
+    err = assert_raises UploadRejectedError do
+      driver.run
+    end
+
+    assert_equal raw_body, err.response_body
+
+    warn_entries = recording.entries.select { |e| e.severity == Logger::WARN }
+    fail_warn = warn_entries.find { |e| e.message.fields["recipe"] == "fail_with_rejected" }
+    refute_nil fail_warn
+    assert_equal raw_body, fail_warn.message.fields["responseBody"]
+  end
+
+  def test_lifecycle_warn_includes_response_body_for_bad_response_error
+    recording = RecordingLogger.new
+    raw_body = "<html>Bad gateway</html>"
+    faraday_err = Faraday::ClientError.new "Server error", {
+      status:  502,
+      headers: {},
+      body:    raw_body
+    }
+    stub = FakeStub.new [faraday_err]
+    config = CompleteUploadConfig.new(
+      initial_url: "https://storage.googleapis.com/upload",
+      stream:      StringIO.new("data"),
+      upload_size: 4,
+      chunk_size:  256
+    )
+
+    driver = Driver.new client_stub: stub, config: config, logger: recording
+    err = assert_raises BadResponseError do
+      driver.run
+    end
+
+    assert_equal raw_body, err.response_body
+
+    warn_entries = recording.entries.select { |e| e.severity == Logger::WARN }
+    fail_warn = warn_entries.find { |e| e.message.fields["recipe"] == "fail_with_bad_response" }
+    refute_nil fail_warn
+    assert_equal raw_body, fail_warn.message.fields["responseBody"]
+  end
+
+  def test_lifecycle_warn_omits_response_body_when_error_lacks_it
+    recording = RecordingLogger.new
+    upload_log = Driver::UploadLog.new recording, upload_id: "test-upload-no-body"
+    state = State.initial.with(
+      status:     :failed,
+      last_error: DeadlineExceededError.new("Upload deadline exceeded")
+    )
+    decision = Decision.new(
+      from_status:  :transferring,
+      shape:        :deadline_exceeded,
+      recipe:       :fail_with_deadline_exceeded,
+      next_state:   state,
+      instructions: []
+    )
+
+    upload_log.lifecycle decision, CompleteUploadConfig.new(
+      initial_url: "https://storage.googleapis.com/upload",
+      stream:      StringIO.new("data"),
+      upload_size: 4,
+      chunk_size:  256
+    )
+
+    warn_entries = recording.entries.select { |e| e.severity == Logger::WARN }
+    fail_warn = warn_entries.find { |e| e.message.fields["recipe"] == "fail_with_deadline_exceeded" }
+    refute_nil fail_warn
+    assert_equal "Upload deadline exceeded", fail_warn.message.fields["error"]
+    assert_nil fail_warn.message.fields["responseBody"]
+  end
 end

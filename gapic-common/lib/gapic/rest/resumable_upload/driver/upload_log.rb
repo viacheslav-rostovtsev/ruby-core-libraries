@@ -186,10 +186,19 @@ module Gapic
               { uploadUrl: Abridge.url(state.upload_url) }
             when :fail_with_deadline_exceeded, :fail_with_rejected, :fail_with_bad_response,
                  :fail_with_request_error
-              { error: state.last_error&.message || state.last_error.to_s }
+              failure_fields state
             else
               {}
             end
+          end
+
+          def failure_fields state
+            err = state.last_error
+            fields = { error: err&.message || err.to_s }
+            if err.respond_to?(:response_body) && err.response_body
+              fields[:responseBody] = Abridge.error_body err.response_body
+            end
+            fields
           end
 
           def entry severity, log_msg, **fields

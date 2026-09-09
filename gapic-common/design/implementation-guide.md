@@ -514,6 +514,7 @@ All log entries emitted by `UploadLog` populate structured fields in `Google::Lo
     *   `uploadUrl`: Abridged session upload URL (on `:begin_transmission` and `:cancel_session`).
     *   `status`: Current protocol status symbol (on `unmatched_transition`).
     *   `error`: Exception message string (on `fail_with_*` and `unmatched_transition`).
+    *   `responseBody`: Abridged error response body from `last_error.response_body` when present (on `fail_with_*`).
 *   **Wire & Transport Fields**:
     *   `method`: Always the string `"POST"`.
     *   `url`: Abridged request target URI.
