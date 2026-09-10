@@ -30,7 +30,7 @@ The `Driver` executes all operations with side-effects. It interacts with HTTP t
 Crucially, the Driver delegates all **Category 1 (Transient)** transport retries directly to `Gapic::Common::RetryPolicy`. Transient retries occur entirely within the Driver's network execution wrapper. The `Core` state machine is never exposed to transient noise, receiving only verified successful HTTP responses or terminal transport exceptions.
 
 The Driver exposes:
-*   `Driver#resume_handle`: Returns a `ResumeHandle` (or `nil` if initiation has not established an upload URL, or if the session is `:rejected`, `:cancelled`, or `:success`). Reading this property mid-run provides a best-effort snapshot of current session parameters.
+*   `Driver#resume_handle`: Returns a `ResumeHandle` (or `nil` if initiation has not established an upload URL, or if the session is `:rejected`, `:cancelled`, or `:success`; completed uploads are not resumable). Reading this property mid-run provides a best-effort snapshot of current session parameters.
 *   `Driver#upload_url`: Returns the raw protocol state upload URL under any status (`:active`, `:success`, `:rejected`, `:cancelled`).
 *   `Driver#stream_position`: Returns the current absolute stream offset (`@buffer_start_offset + @buffer.bytesize`).
 
@@ -57,8 +57,17 @@ The `Session` (`Gapic::Rest::ResumableUpload::Session`) provides a client-facing
     *   `start` raises `SessionStateError` (a bound session never re-binds).
 3.  **Bound Dead (`session.bound? && !session.resumable?`)**:
     *   Finalized state (completed `200 OK`, rejected `4xx`, or cancelled).
+    *   Completed uploads are not resumable: once a transfer succeeds, `resume_handle` returns `nil` and `resumable?` returns `false`.
     *   The session is permanently unusable for further uploads.
     *   Both `start` and `resume` raise `SessionStateError`. An end user wishing to upload must create a new session.
+
+#### Resume Invocations & Forms
+The `Session#resume` method accepts strictly keyword-only arguments (`upload_url: nil, chunk_size: nil, resume_handle: nil, stream_offset: nil`):
+1.  **Bare Resume (`session.resume(stream_offset: nil)`)**: Continues the bound upload. Derives `stream_offset`:
+    *   If `stream.respond_to?(:seek)`: `0` (realign/rewind seeks the stream to match the server offset).
+    *   Otherwise: `@last_driver.stream_position` (the byte offset to which the physical unseekable stream was advanced in the prior run).
+2.  **Explicit URL & Chunk Size (`session.resume(upload_url:, chunk_size:, stream_offset: nil)`)**: Binds and resumes with explicit upload URL and chunk size.
+3.  **Resume Handle (`session.resume(resume_handle:, stream_offset: nil)`)**: Binds and resumes using an existing `ResumeHandle`.
 
 #### Concurrency & Execution Model
 *   At most one run (`Driver#run`) may execute at any time.

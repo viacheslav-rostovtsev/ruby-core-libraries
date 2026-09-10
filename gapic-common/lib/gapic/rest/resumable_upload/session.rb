@@ -30,12 +30,13 @@ module Gapic
       # ### Observable States
       # 1. **Unbound** (`!bound?`): Fresh session. `start` and explicit `resume` are allowed.
       #    Bare `resume` raises {SessionStateError}.
-      # 2. **Bound and Alive** (`bound? && resumable?`): Active or recoverable upload.
-      #    Bare `resume` is allowed; `start` raises {SessionStateError}.
+      # 2. **Bound and Alive** (`bound? && resumable?`): Active or paused with valid {resume_handle}.
+      #    Bare `resume` and matching explicit `resume` are allowed; `start` raises {SessionStateError}.
       # 3. **Bound Dead** (`bound? && !resumable?`): Finalized upload (completed, rejected, or cancelled).
-      #    The session is permanently unusable; both `start` and `resume` raise {SessionStateError}.
+      #    Completed uploads are not resumable. The session is permanently unusable for further uploads;
+      #    both `start` and `resume` raise {SessionStateError}. An end user wishing to upload must create
+      #    a new session.
       #
-      # rubocop:disable Metrics/ClassLength
       class Session
         # @return [Gapic::Rest::ClientStub] Underlying REST client stub
         attr_reader :client_stub
@@ -90,7 +91,6 @@ module Gapic
         # @param upload_size [Integer, nil] Total upload bytes if known upfront
         # @param chunk_size [Integer, nil] Explicit chunk size in bytes
         # @param content_type [String, nil] MIME type of uploaded media
-        # @param size [Integer, nil] Alias for `upload_size`
         # @param timeout [Numeric, nil] Total upload timeout in seconds
         # @param start_retry_policy [Gapic::Common::RetryPolicy, Hash, nil] Initiation retry policy
         # @param control_plane_retry_policy [Gapic::Common::RetryPolicy, Hash, nil] Control retry policy
@@ -106,7 +106,6 @@ module Gapic
                        upload_size: nil,
                        chunk_size: nil,
                        content_type: nil,
-                       size: nil,
                        timeout: nil,
                        start_retry_policy: nil,
                        control_plane_retry_policy: nil,
@@ -118,7 +117,7 @@ module Gapic
           @initial_url = initial_url
           @initial_body = initial_body
           @initial_headers = initial_headers || {}
-          @upload_size = upload_size || size
+          @upload_size = upload_size
           @chunk_size = chunk_size
           @content_type = content_type
           @timeout = timeout
@@ -149,10 +148,11 @@ module Gapic
         def bound?
           @mutex.synchronize { !upload_url_internal.nil? }
         end
-        alias bound bound?
 
         ##
         # Returns the current {ResumeHandle} if the session is alive and resumable.
+        # Completed uploads are not resumable (returns nil). Rejected uploads and
+        # cancelled uploads are also finalized and not resumable, returning nil.
         #
         # @return [ResumeHandle, nil]
         def resume_handle
@@ -161,22 +161,13 @@ module Gapic
 
         ##
         # Returns whether the session can be resumed.
+        # Completed uploads are not resumable (returns false). Rejected uploads and
+        # cancelled uploads are also finalized and not resumable (returns false).
         #
         # @return [Boolean]
         def resumable?
           @mutex.synchronize { !resume_handle_internal.nil? }
         end
-        alias resumable resumable?
-
-        ##
-        # Returns whether the session is permanently dead (finalized, rejected, or cancelled).
-        #
-        # @return [Boolean]
-        def is_dead?
-          @mutex.synchronize { bound_internal? && resume_handle_internal.nil? }
-        end
-        alias is_dead is_dead?
-        alias dead? is_dead?
 
         ##
         # Returns whether a run is currently executing.
@@ -185,7 +176,6 @@ module Gapic
         def running?
           @mutex.synchronize { @running }
         end
-        alias running running?
 
         ##
         # Starts a new upload session on the server.
@@ -208,11 +198,13 @@ module Gapic
 
         ##
         # Resumes an upload session using one of three mutually exclusive forms:
-        # 1. Bare `resume(stream_offset: nil)`: Continues the bound upload.
+        # 1. Bare `resume(stream_offset: nil)`: Continues the bound upload. Derives stream_offset as 0
+        #    for seekable streams or the prior run stream_position for unseekable streams.
         # 2. `resume(upload_url:, chunk_size:, stream_offset: nil)`: Binds and resumes explicit URL and chunk size.
         # 3. `resume(resume_handle:, stream_offset: nil)`: Binds and resumes via {ResumeHandle}.
         #
-        # @param handle_or_upload_url [ResumeHandle, String, nil] Optional positional handle or upload URL
+        # Completed uploads are not resumable; attempting to resume a completed session raises {SessionStateError}.
+        #
         # @param upload_url [String, nil] Explicit upload URL
         # @param chunk_size [Integer, nil] Explicit chunk size
         # @param resume_handle [ResumeHandle, nil] Explicit resume handle
@@ -220,13 +212,11 @@ module Gapic
         # @return [String, Object] Final response body upon completion
         # @raise [ArgumentError] If argument shape is invalid or forms are mixed
         # @raise [SessionStateError] If lifecycle rules are violated
-        def resume handle_or_upload_url = nil,
-                   upload_url: nil,
+        def resume upload_url: nil,
                    chunk_size: nil,
                    resume_handle: nil,
                    stream_offset: nil
           target_url, target_chunk_size = resolve_resume_args(
-            handle_or_upload_url,
             upload_url:    upload_url,
             chunk_size:    chunk_size,
             resume_handle: resume_handle
@@ -234,9 +224,11 @@ module Gapic
 
           driver = nil
           @mutex.synchronize do
-            target_url, target_chunk_size = validate_and_bind_resume target_url, target_chunk_size
+            target_url, target_chunk_size, resolved_offset = validate_and_bind_resume(
+              target_url, target_chunk_size, stream_offset
+            )
             @running = true
-            config = build_resume_config target_url, target_chunk_size, stream_offset
+            config = build_resume_config target_url, target_chunk_size, resolved_offset
             driver = Driver.new client_stub: @client_stub, config: config, logger: @logger
           end
 
@@ -257,7 +249,7 @@ module Gapic
           @last_driver&.resume_handle
         end
 
-        def is_dead_internal?
+        def dead_internal?
           bound_internal? && resume_handle_internal.nil?
         end
 
@@ -294,15 +286,7 @@ module Gapic
           )
         end
 
-        def resolve_resume_args pos_arg, upload_url:, chunk_size:, resume_handle:
-          if pos_arg.is_a? ResumeHandle
-            resume_handle = pos_arg
-          elsif pos_arg.is_a? String
-            upload_url = pos_arg
-          elsif !pos_arg.nil?
-            raise ArgumentError, "Unexpected argument: #{pos_arg.inspect}"
-          end
-
+        def resolve_resume_args upload_url:, chunk_size:, resume_handle:
           if resume_handle
             raise ArgumentError, "Cannot pass both resume_handle and upload_url/chunk_size" if upload_url || chunk_size
             [resume_handle.upload_url, resume_handle.chunk_size]
@@ -316,28 +300,44 @@ module Gapic
           end
         end
 
-        def validate_and_bind_resume target_url, target_chunk_size
+        def validate_and_bind_resume target_url, target_chunk_size, stream_offset
           raise SessionStateError, "A run is already in progress for this session" if @running
 
           if target_url.nil?
-            unless bound_internal?
-              raise SessionStateError, "Cannot resume unbound session without resume_handle or upload_url"
-            end
-            raise SessionStateError, "Session is dead and cannot be resumed" if is_dead_internal?
-
-            resolved_url = upload_url_internal
-            resolved_chunk = resume_handle_internal&.chunk_size || @chunk_size
-            raise SessionStateError, "No chunk_size available to resume session" if resolved_chunk.nil?
-            [resolved_url, resolved_chunk]
+            validate_bare_resume stream_offset
           else
-            if bound_internal? && target_url != upload_url_internal
-              raise SessionStateError, "Session is already bound to a different upload: #{upload_url_internal}"
-            end
-            raise SessionStateError, "Session is dead and cannot be resumed" if is_dead_internal?
-
-            @upload_url = target_url
-            [target_url, target_chunk_size]
+            validate_explicit_resume target_url, target_chunk_size, stream_offset
           end
+        end
+
+        def validate_bare_resume stream_offset
+          unless bound_internal?
+            raise SessionStateError, "Cannot resume unbound session without resume_handle or upload_url"
+          end
+          raise SessionStateError, "Session is dead and cannot be resumed" if dead_internal?
+
+          resolved_url = upload_url_internal
+          resolved_chunk = resume_handle_internal&.chunk_size || @chunk_size
+          raise SessionStateError, "No chunk_size available to resume session" if resolved_chunk.nil?
+
+          resolved_offset = stream_offset || (
+            @stream.respond_to?(:seek) ? 0 : (@last_driver&.stream_position || 0)
+          )
+          @stream.seek resolved_offset if @stream.respond_to? :seek
+
+          [resolved_url, resolved_chunk, resolved_offset]
+        end
+
+        def validate_explicit_resume target_url, target_chunk_size, stream_offset
+          if bound_internal? && target_url != upload_url_internal
+            raise SessionStateError, "Session is already bound to a different upload: #{upload_url_internal}"
+          end
+          raise SessionStateError, "Session is dead and cannot be resumed" if dead_internal?
+
+          @upload_url = target_url
+          resolved_offset = stream_offset || 0
+          @stream.seek resolved_offset if @stream.respond_to? :seek
+          [target_url, target_chunk_size, resolved_offset]
         end
 
         def execute_run driver
@@ -356,7 +356,6 @@ module Gapic
           raise
         end
       end
-      # rubocop:enable Metrics/ClassLength
     end
   end
 end

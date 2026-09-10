@@ -151,7 +151,7 @@ flowchart TD
 * **Resume Handle & Error Metadata (`HasResumeHandle`)**:
   * `HasResumeHandle` mixin inclusion verified on `BadResponseError`, `DeadlineExceededError`, `UnseekableStreamError`, `InvalidTransitionError`, `StreamMismatchError`, and `RequestFailedError`.
   * `HasResumeHandle` explicitly refuted on terminal dead-session errors (`UploadRejectedError`, `UploadCancelledError`).
-  * `Rules.resume_handle_from`: Returns `nil` when state is `nil`, `upload_url` is `nil`, or status is `:rejected` or `:cancelled`; returns populated `ResumeHandle` with `upload_url` and `chunk_size` when established.
+  * `Rules.resume_handle_from`: Returns `nil` when state is `nil`, `upload_url` is `nil`, or status is `:rejected`, `:cancelled`, or `:success` (completed uploads are not resumable); returns populated `ResumeHandle` with `upload_url` and `chunk_size` when established.
   * Resumable error suffix: When `resume_handle` is present, uniform suffix `" (upload session is resumable: see #resume_handle)"` is appended to the message on `DeadlineExceededError`, `BadResponseError`, `InvalidTransitionError`, `UnseekableStreamError`, `StreamMismatchError`, and `RequestFailedError`.
   * Suffix omission: When `resume_handle` is `nil` (e.g. before session creation), error message omits the resumable suffix.
   * Terminal dead sessions: `UploadRejectedError` and `UploadCancelledError` do not respond to `:resume_handle` and do not include the suffix.
@@ -321,28 +321,30 @@ flowchart TD
 
 ### 3.13 Resumable Upload Session (`session_test.rb`)
 
-* **Initialization & argument validation (`test_initialize_mandatory_arguments`, `test_initialize_defaults_and_size_alias`)**:
+* **Initialization & argument validation (`test_initialize_mandatory_arguments`, `test_initialize_defaults`)**:
   * Asserts missing any mandatory keyword (`client_stub`, `stream`, `initial_url`, `initial_body`) raises `ArgumentError`.
-  * Verifies defaults (`initial_headers: {}`, optional configs defaulting to `nil`) and confirms `size:` aliases `upload_size:`.
+  * Verifies defaults (`initial_headers: {}`, optional configs defaulting to `nil`, `upload_size:` explicit).
 * **Observable states & lifecycle**:
   * *Unbound (`test_initial_unbound_state`, `test_bare_resume_on_unbound_session_raises_session_state_error`)*:
-    * Verifies `bound?`, `resumable?`, `is_dead?`, and `running?` return `false`, and `upload_url` / `resume_handle` return `nil`.
+    * Verifies `bound?`, `resumable?`, and `running?` return `false`, and `upload_url` / `resume_handle` return `nil`.
     * Asserts bare `session.resume` on an unbound session raises `SessionStateError`.
-  * *Bound and Alive (`test_resume_form1_bare_resume_on_bound_alive_session`, `test_resume_form1_bare_resume_without_arguments_when_stream_rewound`)*:
-    * Verifies that when a run fails with a recoverable error, `bound?` and `resumable?` are `true`, `is_dead?` is `false`, and `resume_handle` is present.
-    * Verifies bare `session.resume` successfully continues the bound upload.
+  * *Bound and Alive (`test_resume_form1_bare_resume_on_bound_alive_session`, `test_resume_form1_bare_resume_without_arguments_when_seekable`)*:
+    * Verifies that when a run fails with a recoverable error, `bound?` and `resumable?` are `true`, and `resume_handle` is present.
+    * Verifies bare `session.resume` without arguments successfully continues the bound upload on a seekable stream.
+  * *Bound and Alive on unseekable streams (`test_resume_form1_bare_resume_on_unseekable_stream_derives_offset`)*:
+    * Verifies bare `session.resume` on an unseekable stream derives `stream_offset` from the prior run's `@last_driver.stream_position` and passes it to `ResumeUploadConfig`.
   * *Bound Dead (`test_start_successful_upload_transitions_to_bound_dead`, `test_resume_on_bound_dead_session_raises_session_state_error`)*:
-    * Verifies that after upload finalization (success, rejection, or cancel), `bound?` is `true`, `resumable?` is `false`, and `is_dead?` is `true`.
-    * Asserts resuming a dead session raises `SessionStateError` ("Session is dead and cannot be resumed").
+    * Verifies completed uploads are not resumable: after upload success, `bound?` is `true`, `resumable?` is `false`, and `resume_handle` is `nil`.
+    * Asserts resuming a finalized dead session raises `SessionStateError` ("Session is dead and cannot be resumed").
   * *Start lifecycle violation (`test_start_when_already_bound_raises_session_state_error`)*:
     * Asserts calling `session.start` on an already bound session raises `SessionStateError` ("Session is already bound to an upload").
 * **Resume mutually exclusive forms & argument shape**:
   * *Form 2 (`test_resume_form2_explicit_url_and_chunk_size_binds_unbound_session`)*:
     * Verifies `session.resume(upload_url:, chunk_size:)` immediately binds and executes.
   * *Form 3 (`test_resume_form3_resume_handle_binds_unbound_session`)*:
-    * Verifies `session.resume(resume_handle)` immediately binds and executes.
+    * Verifies `session.resume(resume_handle: handle)` immediately binds and executes.
   * *Argument shape mixing (`test_resume_mixing_arguments_raises_argument_error`)*:
-    * Verifies mixing `resume_handle` with `upload_url` or `chunk_size`, or passing `upload_url` without `chunk_size`, raises `ArgumentError`.
+    * Verifies mixing `resume_handle` with `upload_url` or `chunk_size`, passing positional arguments, or passing `upload_url` without `chunk_size` raises `ArgumentError`.
   * *Re-binding violation (`test_resume_rebinding_different_upload_url_raises_session_state_error`)*:
     * Verifies calling `resume` with a different `upload_url` than the bound session raises `SessionStateError`.
 * **Concurrency & running guard (`test_running_guard_prevents_concurrent_runs`)**:

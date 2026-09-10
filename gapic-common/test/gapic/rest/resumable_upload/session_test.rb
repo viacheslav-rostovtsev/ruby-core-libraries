@@ -46,6 +46,21 @@ class SessionTest < Minitest::Test
     end
   end
 
+  class UnseekableStream
+    attr_reader :pos
+
+    def initialize string
+      @io = StringIO.new string
+      @pos = 0
+    end
+
+    def read length = nil
+      chunk = @io.read length
+      @pos += chunk.bytesize if chunk
+      chunk
+    end
+  end
+
   def build_session stub: nil, stream: nil, upload_size: 10, chunk_size: 4, **kwargs
     stream ||= StringIO.new "0123456789"
     stub ||= ScriptedClientStub.new
@@ -82,13 +97,13 @@ class SessionTest < Minitest::Test
     end
   end
 
-  def test_initialize_defaults_and_size_alias
+  def test_initialize_defaults
     session = Session.new(
       client_stub:  ScriptedClientStub.new,
       stream:       StringIO.new("abc"),
       initial_url:  "https://example.com/initiate",
       initial_body: "",
-      size:         300
+      upload_size:  300
     )
 
     assert_equal 300, session.upload_size
@@ -110,16 +125,10 @@ class SessionTest < Minitest::Test
   def test_initial_unbound_state
     session = build_session
     refute session.bound?
-    refute session.bound
     assert_nil session.upload_url
     assert_nil session.resume_handle
     refute session.resumable?
-    refute session.resumable
-    refute session.is_dead?
-    refute session.is_dead
-    refute session.dead?
     refute session.running?
-    refute session.running
   end
 
   def test_bare_resume_on_unbound_session_raises_session_state_error
@@ -177,8 +186,6 @@ class SessionTest < Minitest::Test
     refute session.running?
     refute session.resumable?
     assert_nil session.resume_handle
-    # Finalized/completed state is Bound Dead (unusable for further uploads)
-    assert session.is_dead?
   end
 
   def test_start_when_already_bound_raises_session_state_error
@@ -248,7 +255,6 @@ class SessionTest < Minitest::Test
     # State: Bound and Alive
     assert session.bound?
     assert session.resumable?
-    refute session.is_dead?
     refute session.running?
     assert_equal "https://upload.example.com/session_1", session.upload_url
     assert_equal "https://upload.example.com/session_1", session.resume_handle.upload_url
@@ -285,14 +291,13 @@ class SessionTest < Minitest::Test
     ]
     stub.instance_variable_set :@responses, recovery_responses
 
-    result = session.resume stream_offset: session.stream.pos
+    result = session.resume
     assert_equal '{"resumed":true}', result
     assert session.bound?
-    assert session.is_dead?
     refute session.resumable?
   end
 
-  def test_resume_form1_bare_resume_without_arguments_when_stream_rewound
+  def test_resume_form1_bare_resume_on_seekable_stream_without_manual_rewind
     stub = ScriptedClientStub.new [
       FakeResponse.new(
         status:  200,
@@ -314,7 +319,6 @@ class SessionTest < Minitest::Test
     assert session.bound?
     assert session.resumable?
 
-    session.stream.rewind
     stub.instance_variable_set :@responses, [
       FakeResponse.new(
         status:  200,
@@ -330,7 +334,61 @@ class SessionTest < Minitest::Test
     result = session.resume
     assert_equal '{"resumed_bare":true}', result
     assert session.bound?
-    assert session.is_dead?
+    refute session.resumable?
+  end
+
+  def test_resume_form1_bare_resume_on_unseekable_stream_derives_offset
+    stream = UnseekableStream.new "0123456789"
+    stub = ScriptedClientStub.new [
+      # Initiation
+      FakeResponse.new(
+        status:  200,
+        headers: {
+          "x-goog-upload-status"            => "active",
+          "x-goog-upload-url"               => "https://upload.example.com/session_unseekable",
+          "x-goog-upload-chunk-granularity" => "4"
+        },
+        body:    ""
+      ),
+      # Chunk 1 (0-3) returns 503 -> recovery
+      FakeResponse.new(status: 503, headers: {}, body: "Service Unavailable"),
+      # Recovery query fails -> RequestFailedError
+      Faraday::ConnectionFailed.new("network connection failed")
+    ]
+
+    session = build_session stub: stub, stream: stream, upload_size: 10, chunk_size: 4
+    assert_raises RequestFailedError do
+      session.start
+    end
+
+    assert session.bound?
+    assert session.resumable?
+    assert_equal 4, stream.pos
+
+    # Script responses for bare resume
+    stub.instance_variable_set :@responses, [
+      # Recovery query on resume: server acknowledges 4 bytes received
+      FakeResponse.new(
+        status:  200,
+        headers: {
+          "x-goog-upload-status"        => "active",
+          "x-goog-upload-size-received" => "4"
+        },
+        body:    ""
+      ),
+      # Chunk 2 (4-7)
+      FakeResponse.new(status: 200, headers: { "x-goog-upload-status" => "active" }, body: ""),
+      # Final chunk (8-9)
+      FakeResponse.new(status: 200, headers: { "x-goog-upload-status" => "final" }, body: '{"unseekable_resumed":true}')
+    ]
+
+    result = session.resume
+    assert_equal '{"unseekable_resumed":true}', result
+    assert_equal 10, stream.pos
+    assert session.bound?
+    refute session.resumable?
+    # Verify derived stream_offset was 4 in the resume driver config
+    assert_equal 4, session.instance_variable_get(:@last_driver).instance_variable_get(:@config).stream_offset
   end
 
   def test_resume_form2_explicit_url_and_chunk_size_binds_unbound_session
@@ -382,7 +440,7 @@ class SessionTest < Minitest::Test
     handle = ResumeHandle.new upload_url: "https://upload.example.com/from_handle", chunk_size: 4
 
     refute session.bound?
-    result = session.resume handle
+    result = session.resume resume_handle: handle
 
     assert_equal '{"from_handle":true}', result
     assert session.bound?
@@ -399,16 +457,12 @@ class SessionTest < Minitest::Test
 
     # Mixing resume_handle with upload_url
     assert_raises ArgumentError do
-      session.resume handle, upload_url: "https://example.com"
-    end
-
-    assert_raises ArgumentError do
       session.resume resume_handle: handle, upload_url: "https://example.com"
     end
 
     # Mixing resume_handle with chunk_size
     assert_raises ArgumentError do
-      session.resume handle, chunk_size: 4
+      session.resume resume_handle: handle, chunk_size: 4
     end
 
     # upload_url without chunk_size
@@ -423,7 +477,7 @@ class SessionTest < Minitest::Test
 
     # Invalid positional argument type
     assert_raises ArgumentError do
-      session.resume 12345
+      session.resume handle
     end
   end
 
@@ -462,7 +516,7 @@ class SessionTest < Minitest::Test
 
     handle_b = ResumeHandle.new upload_url: "https://upload.example.com/session_b", chunk_size: 4
     err2 = assert_raises SessionStateError do
-      session.resume handle_b
+      session.resume resume_handle: handle_b
     end
     assert_includes err2.message, "Session is already bound to a different upload"
   end
@@ -493,7 +547,7 @@ class SessionTest < Minitest::Test
     session.start
 
     assert session.bound?
-    assert session.is_dead?
+    refute session.resumable?
 
     err = assert_raises SessionStateError do
       session.resume

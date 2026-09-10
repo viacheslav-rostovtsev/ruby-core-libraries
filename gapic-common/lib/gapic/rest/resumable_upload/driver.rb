@@ -60,8 +60,10 @@ module Gapic
         ##
         # Returns a {ResumeHandle} representing the current upload session parameters.
         # Reading this property mid-run provides a best-effort snapshot of the current session state.
+        # Completed uploads (`:success`), rejected uploads (`:rejected`), and cancelled uploads
+        # (`:cancelled`) are finalized and not resumable, returning `nil`. Completed uploads are not resumable.
         #
-        # @return [ResumeHandle, nil] Resume handle if upload URL is established, or nil
+        # @return [ResumeHandle, nil] Resume handle if upload URL is established and resumable, or nil
         def resume_handle
           Rules.resume_handle_from @core.state
         end

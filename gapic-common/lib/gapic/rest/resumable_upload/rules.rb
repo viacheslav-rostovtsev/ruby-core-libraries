@@ -571,9 +571,11 @@ module Gapic
 
         ##
         # Extracts a {ResumeHandle} from current protocol state.
+        # Completed uploads (`:success`), rejected uploads (`:rejected`), and cancelled uploads
+        # (`:cancelled`) are finalized and not resumable, returning `nil`. Completed uploads are not resumable.
         #
         # @param state [State] Protocol state
-        # @return [ResumeHandle, nil] Resume handle if upload URL is established, or nil
+        # @return [ResumeHandle, nil] Resume handle if upload URL is established and resumable, or nil
         def self.resume_handle_from state
           return nil if state.nil? || state.upload_url.nil? || [:rejected, :cancelled, :success].include?(state.status)
 
