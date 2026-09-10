@@ -287,9 +287,10 @@ module Gapic
           [next_state, instructions]
         end
 
-        def self.complete_cancellation(state, _event, _config)
-          next_state = state.with(status: :cancelled, in_flight_length: 0)
-          [next_state, [Instruction::TerminateFailure.new(error: Gapic::Common::UploadCancelledError.new)]]
+        def self.complete_cancellation(state, event, _config)
+          err = UploadCancelledError.from(event)
+          next_state = state.with(status: :cancelled, in_flight_length: 0, last_error: err)
+          [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
         def self.ignore_duplicate_cancel(state, _event, _config)
@@ -307,39 +308,43 @@ module Gapic
         end
 
         def self.fail_with_deadline_exceeded(state, _event, _config)
+          err = DeadlineExceededError.new
           next_state = state.with(
             status: :error,
             in_flight_length: 0,
-            last_error: Gapic::Common::DeadlineExceededError.new
+            last_error: err
           )
-          [next_state, [Instruction::TerminateFailure.new(error: next_state.last_error)]]
+          [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
         def self.fail_with_rejected(state, event, _config)
+          err = UploadRejectedError.from(event)
           next_state = state.with(
             status: :rejected,
             in_flight_length: 0,
-            last_error: Gapic::Common::UploadRejectedError.new(event.body)
+            last_error: err
           )
-          [next_state, [Instruction::TerminateFailure.new(error: next_state.last_error)]]
+          [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
         def self.fail_with_bad_response(state, event, _config)
+          err = BadResponseError.from(event)
           next_state = state.with(
             status: :error,
             in_flight_length: 0,
-            last_error: Gapic::Common::BadResponseError.new(event.status)
+            last_error: err
           )
-          [next_state, [Instruction::TerminateFailure.new(error: next_state.last_error)]]
+          [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
         def self.fail_with_request_error(state, event, _config)
+          err = event.source_error || Gapic::Common::Error.new(event.message || "Request failed")
           next_state = state.with(
             status: :error,
             in_flight_length: 0,
-            last_error: event.source_error
+            last_error: err
           )
-          [next_state, [Instruction::TerminateFailure.new(error: event.source_error)]]
+          [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
         def self.fail_with_unmatched_transition(state, event, _config)
@@ -669,6 +674,46 @@ module Gapic
             @upload_log.wire_failure(event)
           end
           event
+        end
+
+        def rescue_request_error(err)
+          case err
+          when Gapic::Rest::DeadlineExceededError
+            Event::RequestFailed.new(kind: :timeout, message: err.message, source_error: err)
+          when Gapic::Rest::Error
+            if err.status_code
+              Event::HttpResponse.new(
+                status: err.status_code,
+                headers: err.headers || {},
+                body: err.message,
+                error: err
+              )
+            else
+              Event::RequestFailed.new(kind: :connection_failed, message: err.message, source_error: err)
+            end
+          when Faraday::Error
+            rescue_faraday_error(err)
+          else
+            Event::RequestFailed.new(kind: :connection_failed, message: err.message, source_error: err)
+          end
+        end
+
+        def rescue_faraday_error(err)
+          if err.response && err.response[:status]
+            rest_err = Gapic::Rest::Error.wrap_faraday_error(err)
+            Event::HttpResponse.new(
+              status:  err.response[:status],
+              headers: err.response[:headers] || {},
+              body:    err.response[:body],
+              error:   rest_err
+            )
+          elsif err.is_a?(Faraday::TimeoutError)
+            Event::RequestFailed.new(kind: :timeout, message: err.message, source_error: err)
+          elsif err.is_a?(Faraday::ConnectionFailed)
+            Event::RequestFailed.new(kind: :connection_failed, message: err.message, source_error: err)
+          else
+            Event::RequestFailed.new(kind: :retries_exhausted, message: err.message, source_error: err)
+          end
         end
       end
     end
