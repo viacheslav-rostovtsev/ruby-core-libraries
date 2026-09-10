@@ -50,6 +50,10 @@ class ShowcaseIntegrationTest < Minitest::Test
     def pos
       @io.pos
     end
+
+    def rewind
+      @io.rewind
+    end
   end
 
   attr_reader :logger
@@ -121,6 +125,35 @@ class ShowcaseIntegrationTest < Minitest::Test
     end
 
     Gapic::Rest::ResumableUpload::CompleteUploadConfig.new(**defaults, **overrides, initial_headers: headers)
+  end
+
+  def build_session scenario: nil, scenario_config: {}, **overrides
+    @progress_records = []
+    headers = (overrides.delete(:initial_headers) || {}).dup
+    if scenario
+      headers["X-Goog-Test-Scenario"] = scenario
+      headers["X-Goog-Test-Scenario-Config"] = JSON.generate(
+        { "client_uuid" => SecureRandom.uuid }.merge(scenario_config)
+      )
+    end
+
+    defaults = {
+      client_stub:                showcase_client_stub,
+      initial_url:                UPLOAD_PATH,
+      initial_headers:            headers,
+      start_retry_policy:         FAST_RETRY,
+      control_plane_retry_policy: FAST_RETRY,
+      data_plane_retry_policy:    FAST_RETRY,
+      timeout:                    10,
+      chunk_size:                 DEFAULT_CHUNK_SIZE,
+      on_progress:                ->(progress) { @progress_records << progress }
+    }
+    unless overrides.key? :stream
+      defaults[:stream] = StringIO.new payload(DEFAULT_PAYLOAD_SIZE)
+      defaults[:upload_size] = DEFAULT_PAYLOAD_SIZE
+    end
+
+    Gapic::Rest::ResumableUpload::Session.new(**defaults, **overrides)
   end
 
   def raw_start scenario: nil, scenario_config: {}, upload_size: nil, headers: {}

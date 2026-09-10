@@ -251,5 +251,35 @@ Tests non-fatal transient retries, missing status headers, retry exhaustion, fat
   * Both runs successfully complete uploading 100 bytes.
   * Demonstrates Showcase session state isolation across sequential client sessions.
 
+---
 
+### 2.5 Resumption Suite (`integration/resumable_upload/resume_test.rb`)
 
+Tests `Gapic::Rest::ResumableUpload::Session` resumption capabilities against Showcase. For full details, see [suite-d-resume-test-plan.md](./suite-d-resume-test-plan.md).
+
+#### Case 1. Resume in-progress upload on seekable stream (`test_resume_in_progress_upload`)
+* Uploads chunk 1 via `raw_upload`, then resumes with a fresh session and full stream.
+* Asserts `phases == [:initiating, :uploading, :uploading, :uploading, :finalizing, :completed]` and offsets align correctly.
+
+#### Case 2. Resume already finalized upload (`test_resume_finalized_upload`)
+* Finalizes upload upfront via `raw_upload(finalize: true)`, then attempts to resume.
+* Asserts direct completion with `phases == [:initiating, :completed]` and final payload parsed cleanly.
+
+#### Case 3. Non-fatal errors on query during resume
+* **Case 3a (`test_resume_query_503_absorbed_by_retry`)**: 503 on resume query is absorbed transparently by `control_plane_retry_policy`.
+* **Case 3b (`test_resume_query_409_triggers_retry_recovery`)**: 409 Category 2 error on query triggers `retry_recovery` re-querying without progress notification (`refute_includes phases, :recovering`).
+
+#### Case 4. Unseekable stream fast-forward on resume (`test_resume_unseekable_stream_fast_forwards`)
+* Resumes using an `UnseekableStream` starting at byte 0.
+* Verifies Driver fast-forwards by discarding bytes up to server offset, then uploads remaining chunks.
+
+#### Case 5. Stream mismatch errors on resume
+* **Case 5a (`test_resume_wrong_stream_unseekable_mismatch`)**: Unseekable stream hitting unexpected EOF during discard raises `StreamMismatchError`.
+* **Case 5b (`test_resume_wrong_stream_seekable_size_guard`)**: Seekable `StringIO` with `server_offset > stream.size` (and `upload_size: nil`) raises `StreamMismatchError` via stream size guard.
+
+#### Case 6. Golden user-style resume (`test_golden_user_style_resume_seekable`, `test_golden_user_style_resume_unseekable`)
+* User raises exception in `on_progress` carrying `session.resume_handle` on first upload ack.
+* Fresh session resumes via `resume_handle: handle` and completes the transfer. Tested on both seekable and unseekable streams (rewound to 0).
+
+#### Case 7. Lifecycle and contract violations (`test_lifecycle_violations`)
+* Verifies second `start` and `resume` on bound session raise `SessionStateError`, and bare `resume` raises `ArgumentError`.
