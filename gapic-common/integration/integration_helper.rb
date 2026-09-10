@@ -122,4 +122,42 @@ class ShowcaseIntegrationTest < Minitest::Test
 
     Gapic::Rest::ResumableUpload::CompleteUploadConfig.new(**defaults, **overrides, initial_headers: headers)
   end
+
+  def raw_start scenario: nil, scenario_config: {}, upload_size: nil, headers: {}
+    req_headers = {
+      "X-Goog-Upload-Protocol" => "resumable",
+      "X-Goog-Upload-Command"  => "start"
+    }
+    req_headers["X-Goog-Upload-Header-Content-Length"] = upload_size.to_s if upload_size
+    if scenario
+      req_headers["X-Goog-Test-Scenario"] = scenario
+      req_headers["X-Goog-Test-Scenario-Config"] = JSON.generate(
+        { "client_uuid" => SecureRandom.uuid }.merge(scenario_config)
+      )
+    end
+    req_headers.merge! headers
+
+    response = showcase_client_stub.make_post_request(
+      uri:     UPLOAD_PATH,
+      body:    nil,
+      options: { metadata: req_headers }
+    )
+    Gapic::Rest::ResumableUpload::Rules.header_value response.headers, "x-goog-upload-url"
+  end
+
+  def raw_upload upload_url:, offset:, bytes:, finalize: false, headers: {}
+    req_headers = {
+      "X-Goog-Upload-Command" => finalize ? "upload, finalize" : "upload",
+      "X-Goog-Upload-Offset"  => offset.to_s,
+      "Content-Type"          => "application/octet-stream",
+      "Content-Length"        => bytes.bytesize.to_s
+    }
+    req_headers.merge! headers
+
+    showcase_client_stub.make_post_request(
+      uri:     upload_url,
+      body:    bytes,
+      options: { metadata: req_headers }
+    )
+  end
 end
