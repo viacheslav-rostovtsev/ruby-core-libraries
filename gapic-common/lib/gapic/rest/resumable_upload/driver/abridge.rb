@@ -27,6 +27,13 @@ module Gapic
         module Abridge
           module_function
 
+          ##
+          # @private
+          # Formats binary payload into truncated hex representation.
+          #
+          # @param data [Object, nil] Binary or string payload
+          # @return [String, nil] Truncated hex representation or nil
+          #
           def bytes data
             return nil if data.nil?
 
@@ -38,12 +45,26 @@ module Gapic
             end
           end
 
+          ##
+          # @private
+          # Truncates error body to a safe log length.
+          #
+          # @param data [Object, nil] Error body payload
+          # @return [String, nil] UTF-8 scrubbed and truncated string
+          #
           def error_body data
             return nil if data.nil?
 
             data.to_s.dup.force_encoding(Encoding::UTF_8).scrub[0, 512]
           end
 
+          ##
+          # @private
+          # Redacts query parameter values in URLs for safe logging.
+          #
+          # @param url [Object, nil] URL string or URI
+          # @return [String, nil] URL with query values elided
+          #
           def url url
             return nil if url.nil?
 
@@ -61,6 +82,13 @@ module Gapic
             url.to_s
           end
 
+          ##
+          # @private
+          # Redacts non-protocol headers for safe logging.
+          #
+          # @param headers [Object] Headers hash
+          # @return [Hash<String, String>] Redacted headers
+          #
           def headers headers
             return {} unless headers.is_a? Hash
 
@@ -76,11 +104,25 @@ module Gapic
             end
           end
 
+          ##
+          # @private
+          # Converts a list of instructions into log-safe representation hashes.
+          #
+          # @param instructions [Array<Object>] List of instructions
+          # @return [Array<Hash>] Log-safe instruction summaries
+          #
           def instructions instructions
             instructions.map { |i| instruction i }
           end
 
           # rubocop:disable Metrics/MethodLength
+          ##
+          # @private
+          # Converts an instruction into a log-safe representation hash.
+          #
+          # @param instruction [Object] Instruction object
+          # @return [Hash] Log-safe instruction summary
+          #
           def instruction instruction
             case instruction
             when Instruction::SendStart

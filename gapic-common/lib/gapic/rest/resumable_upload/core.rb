@@ -21,17 +21,25 @@ module Gapic
   module Rest
     module ResumableUpload
       ##
+      # @private
       # State machine container holding the immutable State snapshot.
       # Contains zero protocol branching logic and zero side-effects.
       #
       class Core
+        # @private
         # @return [State] Current immutable state snapshot
         attr_reader :state
 
+        # @private
         # @return [Decision, nil] Decision emitted during the last dispatch
         attr_reader :last_decision
 
-        # @param config [CompleteUploadConfig]
+        ##
+        # @private
+        # Initializes a Core state machine container.
+        #
+        # @param config [CompleteUploadConfig] Upload session configuration
+        #
         def initialize config
           @config = config
           @last_decision = nil
@@ -47,10 +55,12 @@ module Gapic
         end
 
         ##
+        # @private
         # Dispatches event to Rules and updates internal state snapshot.
         #
         # @param event [Object] Input event
         # @return [Array<Object>] Driver instructions
+        #
         def dispatch event
           decision = Rules.decide @state, event, @config
           @state = decision.next_state

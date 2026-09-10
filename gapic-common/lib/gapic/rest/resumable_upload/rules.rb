@@ -24,14 +24,34 @@ module Gapic
   module Rest
     module ResumableUpload
       ##
+      # @private
       # Pure functional transition engine for the Resumable Upload Protocol.
       # Contains zero side-effects and zero persistent state.
       #
       # rubocop:disable Metrics/ModuleLength
       module Rules
+        ##
+        # @private
+        # Default chunk size in bytes (8 MB).
+        # @return [Integer]
         DEFAULT_CHUNK_SIZE = 8_388_608 # 8 MB
+
+        ##
+        # @private
+        # HTTP status codes eligible for Category 2 (recovery) handling.
+        # @return [Array<Integer>]
         CAT2_STATUS_CODES = [400, 408, 409, 412, 416, 429, 499].freeze
+
+        ##
+        # @private
+        # HTTP status codes that are immediately fatal and non-retriable.
+        # @return [Array<Integer>]
         FATAL_STATUS_CODES = [401, 403, 404, 405, 410, 413, 415].freeze
+
+        ##
+        # @private
+        # Human-readable state descriptions for error reporting.
+        # @return [Hash<Symbol, String>]
         STATE_DESCRIPTIONS = {
           initializing:                "initializing upload",
           starting:                    "initiating upload session",
@@ -48,8 +68,9 @@ module Gapic
         }.freeze
 
         ##
+        # @private
         # Canonical list of recipe symbols emitted by {Rules.decide}.
-        #
+        # @return [Array<Symbol>]
         RECIPES = [
           :start_session,
           :begin_transmission,
@@ -73,8 +94,9 @@ module Gapic
         ].freeze
 
         ##
+        # @private
         # Mapping of notifying recipes to their emitted {Progress} phase.
-        #
+        # @return [Hash<Symbol, Symbol>]
         RECIPE_PHASES = {
           start_session:             :initiating,
           begin_transmission:        :uploading,
@@ -89,8 +111,9 @@ module Gapic
         }.freeze
 
         ##
+        # @private
         # Recipes that do not emit {Instruction::NotifyProgress}.
-        #
+        # @return [Array<Symbol>]
         NON_NOTIFYING_RECIPES = [
           :send_chunk,
           :retry_recovery,
@@ -104,6 +127,7 @@ module Gapic
         ].freeze
 
         ##
+        # @private
         # Classifies incoming event into a canonical shape symbol.
         #
         # @param event [Object] Input event
@@ -130,6 +154,7 @@ module Gapic
         end
 
         ##
+        # @private
         # Top-level transition decision engine. Matches [state.status, shape].
         #
         # @param state [State] Current state
@@ -203,6 +228,7 @@ module Gapic
         # rubocop:enable Metrics/CyclomaticComplexity,Metrics/PerceivedComplexity,Metrics/MethodLength
 
         ##
+        # @private
         # Top-level transition router. Matches [state.status, shape].
         #
         # @param state [State] Current state
@@ -214,6 +240,14 @@ module Gapic
           [decision.next_state, decision.instructions]
         end
 
+        ##
+        # @private
+        # Initiates the upload session.
+        #
+        # @param state [State] Current state
+        # @param _event [Object] Dispatched event
+        # @param config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.start_session state, _event, config
           next_state = state.with status: :starting
           progress = Progress.new phase: :initiating, bytes_uploaded: next_state.offset, total_bytes: config.upload_size
@@ -228,6 +262,14 @@ module Gapic
           [next_state, instructions]
         end
 
+        ##
+        # @private
+        # Processes initiation response and begins data reading.
+        #
+        # @param state [State] Current state
+        # @param event [Event::HttpResponse] Initiation response
+        # @param config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.begin_transmission state, event, config
           granularity_str = header_value event.headers, "x-goog-upload-chunk-granularity"
           granularity = granularity_str&.to_i
@@ -249,6 +291,14 @@ module Gapic
           [next_state, instructions]
         end
 
+        ##
+        # @private
+        # Emits instruction to transmit a filled data chunk.
+        #
+        # @param state [State] Current state
+        # @param event [Event::ChunkRead] Chunk read event
+        # @param _config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.send_chunk state, event, _config
           next_state = state.with(
             status:           :transmission_sending,
@@ -265,6 +315,14 @@ module Gapic
           [next_state, instructions]
         end
 
+        ##
+        # @private
+        # Emits instruction to transmit the final data chunk with finalize.
+        #
+        # @param state [State] Current state
+        # @param event [Event::ChunkRead] Chunk read event with EOF
+        # @param config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.send_upload_finalize state, event, config
           next_state = state.with(
             status:           :finalizing_sending_upload,
@@ -283,6 +341,14 @@ module Gapic
           [next_state, instructions]
         end
 
+        ##
+        # @private
+        # Emits instruction to send a zero-length finalize command.
+        #
+        # @param state [State] Current state
+        # @param _event [Object] Dispatched event
+        # @param config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.send_finalize state, _event, config
           next_state = state.with(
             status:           :finalizing_sending_finalize,
@@ -296,6 +362,14 @@ module Gapic
           [next_state, instructions]
         end
 
+        ##
+        # @private
+        # Acknowledges transmitted chunk and advances offset.
+        #
+        # @param state [State] Current state
+        # @param _event [Object] Dispatched event
+        # @param config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.ack_chunk state, _event, config
           new_offset = state.offset + state.in_flight_length
           next_state = state.with(
@@ -312,6 +386,14 @@ module Gapic
           [next_state, instructions]
         end
 
+        ##
+        # @private
+        # Transitions to recovery state to query backend byte offset.
+        #
+        # @param state [State] Current state
+        # @param _event [Object] Dispatched event
+        # @param config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.enter_recovery state, _event, config
           next_state = state.with(
             status:           :recovery,
@@ -325,6 +407,14 @@ module Gapic
           [next_state, instructions]
         end
 
+        ##
+        # @private
+        # Retries offset query during recovery.
+        #
+        # @param state [State] Current state
+        # @param _event [Object] Dispatched event
+        # @param _config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.retry_recovery state, _event, _config
           next_state = state.with(
             status:           :recovery,
@@ -333,6 +423,14 @@ module Gapic
           [next_state, [Instruction::SendQuery.new(url: state.upload_url)]]
         end
 
+        ##
+        # @private
+        # Completes upload when final chunk transmission succeeds.
+        #
+        # @param state [State] Current state
+        # @param event [Event::HttpResponse] Final HTTP response
+        # @param _config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.complete_upload_with_data state, event, _config
           new_offset = state.offset + state.in_flight_length
           next_state = state.with(
@@ -348,6 +446,14 @@ module Gapic
           [next_state, instructions]
         end
 
+        ##
+        # @private
+        # Completes upload when standalone finalize succeeds.
+        #
+        # @param state [State] Current state
+        # @param event [Event::HttpResponse] Final HTTP response
+        # @param _config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.complete_upload_finalized state, event, _config
           next_state = state.with(
             status:           :success,
@@ -361,6 +467,14 @@ module Gapic
           [next_state, instructions]
         end
 
+        ##
+        # @private
+        # Realigns buffer and resumes transmission from recovered offset.
+        #
+        # @param state [State] Current state
+        # @param event [Event::HttpResponse] Query response containing acknowledged offset
+        # @param config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.realign_from_recovery state, event, config
           server_offset_str = header_value event.headers, "x-goog-upload-size-received"
           server_offset = server_offset_str.to_i
@@ -378,16 +492,40 @@ module Gapic
           [next_state, instructions]
         end
 
+        ##
+        # @private
+        # Completes session cancellation and emits failure instruction.
+        #
+        # @param state [State] Current state
+        # @param event [Object] Cancellation response event
+        # @param _config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.complete_cancellation state, event, _config
           err = UploadCancelledError.from event
           next_state = state.with status: :cancelled, in_flight_length: 0, last_error: err
           [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
+        ##
+        # @private
+        # Ignores redundant cancel signal when cancellation is already in progress.
+        #
+        # @param state [State] Current state
+        # @param _event [Object] Dispatched event
+        # @param _config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.ignore_duplicate_cancel state, _event, _config
           [state, []]
         end
 
+        ##
+        # @private
+        # Initiates session cancellation request.
+        #
+        # @param state [State] Current state
+        # @param _event [Object] Dispatched event
+        # @param config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.cancel_session state, _event, config
           next_state = state.with status: :cancelling
           progress = Progress.new phase: :cancelling, bytes_uploaded: next_state.offset, total_bytes: config.upload_size
@@ -398,6 +536,14 @@ module Gapic
           [next_state, instructions]
         end
 
+        ##
+        # @private
+        # Fails upload due to exceeded execution deadline.
+        #
+        # @param state [State] Current state
+        # @param _event [Object] Dispatched event
+        # @param _config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.fail_with_deadline_exceeded state, _event, _config
           err = DeadlineExceededError.new
           next_state = state.with(
@@ -408,6 +554,14 @@ module Gapic
           [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
+        ##
+        # @private
+        # Fails upload when backend explicitly rejects session.
+        #
+        # @param state [State] Current state
+        # @param event [Event::HttpResponse] Rejected HTTP response
+        # @param _config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.fail_with_rejected state, event, _config
           err = UploadRejectedError.from event
           next_state = state.with(
@@ -418,6 +572,14 @@ module Gapic
           [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
+        ##
+        # @private
+        # Fails upload when an unrecoverable HTTP response is encountered.
+        #
+        # @param state [State] Current state
+        # @param event [Event::HttpResponse] Fatal HTTP response
+        # @param _config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.fail_with_bad_response state, event, _config
           err = BadResponseError.from event
           next_state = state.with(
@@ -428,6 +590,14 @@ module Gapic
           [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
+        ##
+        # @private
+        # Fails upload when an unrecoverable network or request error occurs.
+        #
+        # @param state [State] Current state
+        # @param event [Event::RequestFailed] Request failure event
+        # @param _config [CompleteUploadConfig] Session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.fail_with_request_error state, event, _config
           err = event.source_error || Gapic::Common::Error.new(event.message || "Request failed")
           next_state = state.with(
@@ -438,6 +608,14 @@ module Gapic
           [next_state, [Instruction::TerminateFailure.new(error: err)]]
         end
 
+        ##
+        # @private
+        # Raises InvalidTransitionError for unmatched state and event pair.
+        #
+        # @param state [State] Current state
+        # @param event [Object] Dispatched event
+        # @param _config [CompleteUploadConfig] Session configuration
+        # @raise [InvalidTransitionError]
         def self.fail_with_unmatched_transition state, event, _config
           shape = shape_of event
           action = STATE_DESCRIPTIONS[state.status] || "processing #{state.status}"
@@ -447,6 +625,13 @@ module Gapic
           raise InvalidTransitionError.new(message, state: state.status, event: event, response: response)
         end
 
+        ##
+        # @private
+        # Formats human-readable summary of an event.
+        #
+        # @param event [Object] Event instance
+        # @param shape [Symbol] Event shape symbol
+        # @return [String] Formatted description
         def self.describe_event event, shape
           case event
           when Event::HttpResponse
@@ -463,10 +648,11 @@ module Gapic
         end
 
         ##
+        # @private
         # Resolves effective chunk size given user specification and backend granularity.
         #
-        # @param user_chunk_size [Integer, nil]
-        # @param chunk_granularity [Integer, nil]
+        # @param user_chunk_size [Integer, nil] Configured chunk size
+        # @param chunk_granularity [Integer, nil] Backend alignment granularity
         # @return [Integer] Effective chunk size in bytes
         def self.resolve_chunk_size user_chunk_size, chunk_granularity
           base_size = user_chunk_size || DEFAULT_CHUNK_SIZE
@@ -477,10 +663,11 @@ module Gapic
         end
 
         ##
+        # @private
         # Classifies an HTTP response into a canonical response shape.
         #
-        # @param response [Event::HttpResponse]
-        # @return [Symbol]
+        # @param response [Event::HttpResponse] Response event
+        # @return [Symbol] Canonical response shape
         def self.classify_http_response response
           status_header = header_value(response.headers, "x-goog-upload-status")&.downcase
 
@@ -503,11 +690,12 @@ module Gapic
         end
 
         ##
+        # @private
         # Case-insensitive header lookup helper.
         #
-        # @param headers [Hash, Object]
-        # @param key [String]
-        # @return [String, nil]
+        # @param headers [Hash, Object] Headers collection
+        # @param key [String] Target header key
+        # @return [String, nil] Header value
         def self.header_value headers, key
           return nil unless headers.is_a? Hash
           return headers[key] if headers.key? key
@@ -517,6 +705,12 @@ module Gapic
           val
         end
 
+        ##
+        # @private
+        # Classifies chunk read event by buffer size and EOF flag.
+        #
+        # @param event [Event::ChunkRead] Chunk read event
+        # @return [Symbol] Canonical chunk shape
         def self.classify_chunk_read event
           if !event.eof
             :chunk_read_full
@@ -527,6 +721,12 @@ module Gapic
           end
         end
 
+        ##
+        # @private
+        # Classifies request failure event by failure kind.
+        #
+        # @param event [Event::RequestFailed] Request failed event
+        # @return [Symbol] Canonical failure shape
         def self.classify_request_failed event
           case event.kind
           when :timeout then :request_timeout
@@ -536,6 +736,12 @@ module Gapic
           end
         end
 
+        ##
+        # @private
+        # Classifies raw event class objects.
+        #
+        # @param event_class [Class] Event class
+        # @return [Symbol] Canonical shape
         def self.classify_event_class event_class
           if event_class == Event::StartUpload
             :start_upload

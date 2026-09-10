@@ -37,15 +37,23 @@ module Gapic
       class Driver
         include Gapic::LoggingConcerns
 
-        # Minimum assumed upload throughput in bytes per second (1 MB/s)
+        ##
+        # @private
+        # Minimum assumed upload throughput in bytes per second (1 MB/s).
+        # @return [Integer]
         MIN_ASSUMED_THROUGHPUT = 1_048_576
 
-        # Default base timeout in seconds (1 hour)
+        ##
+        # @private
+        # Default base timeout in seconds (1 hour).
+        # @return [Integer]
         BASE_TIMEOUT = 3_600
 
+        # @private
         # @return [Core]
         attr_reader :core
 
+        # @private
         # @return [String, nil] Current upload session ID
         attr_reader :upload_id
 
@@ -131,6 +139,13 @@ module Gapic
 
         private
 
+        ##
+        # @private
+        # Dispatches an event to Core, logging decisions and transitions.
+        #
+        # @param event [Object] Input event
+        # @return [Array<Object>] Emitted instructions
+        #
         def dispatch_event event
           instructions = begin
             @core.dispatch event
@@ -143,11 +158,25 @@ module Gapic
           instructions
         end
 
+        ##
+        # @private
+        # Checks whether an instruction execution result represents a pending event.
+        #
+        # @param obj [Object] Execution result
+        # @return [Boolean]
+        #
         def pending_event_type? obj
           obj.is_a?(Event::ChunkRead) || obj.is_a?(Event::HttpResponse) ||
             obj.is_a?(Event::RequestFailed) || obj.is_a?(Event::GlobalDeadlineExceeded)
         end
 
+        ##
+        # @private
+        # Executes an instruction emitted by the state machine.
+        #
+        # @param instruction [Object] Instruction to execute
+        # @return [Object, nil] Resulting event or terminal response
+        #
         def dispatch_instruction instruction
           case instruction
           when Instruction::NotifyProgress then execute_notify_progress instruction
@@ -164,6 +193,14 @@ module Gapic
           end
         end
 
+        ##
+        # @private
+        # Resolves a configured retry policy or applies defaults.
+        #
+        # @param value [Gapic::Common::RetryPolicy, Hash, nil] Configured policy or overrides
+        # @param defaults [Hash] Default policy configuration
+        # @return [Gapic::Common::RetryPolicy]
+        #
         def resolve_retry_policy value, defaults
           case value
           when Gapic::Common::RetryPolicy
@@ -177,6 +214,12 @@ module Gapic
           end
         end
 
+        ##
+        # @private
+        # Resolves the total upload deadline timeout in seconds.
+        #
+        # @return [Numeric] Timeout in seconds
+        #
         def resolve_timeout
           return @config.timeout if @config.timeout&.positive?
 
@@ -187,6 +230,13 @@ module Gapic
           end
         end
 
+        ##
+        # @private
+        # Computes the per-request timeout bounded by the global monotonic deadline.
+        #
+        # @param retry_policy [Gapic::Common::RetryPolicy, nil] Target command retry policy
+        # @return [Numeric] Effective per-request timeout
+        #
         def request_timeout retry_policy
           remaining = if @deadline
                         [@deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC), 0].max
@@ -198,22 +248,46 @@ module Gapic
           remaining
         end
 
+        ##
+        # @private
+        # Checks whether the monotonic clock has exceeded the session deadline.
+        #
+        # @return [Boolean]
+        #
         def deadline_exceeded?
           return false unless @deadline
-
           Process.clock_gettime(Process::CLOCK_MONOTONIC) > @deadline
         end
 
+        ##
+        # @private
+        # Determines whether the instruction list contains a terminal instruction.
+        #
+        # @param instructions [Array<Object>] Instruction list
+        # @return [Boolean]
+        #
         def terminal_instructions? instructions
           instructions.any? do |i|
             i.is_a?(Instruction::TerminateSuccess) || i.is_a?(Instruction::TerminateFailure)
           end
         end
 
+        ##
+        # @private
+        # Invokes caller progress callback with snapshot.
+        #
+        # @param instruction [Instruction::NotifyProgress] Progress instruction
+        #
         def execute_notify_progress instruction
           @config.on_progress&.call instruction.progress
         end
 
+        ##
+        # @private
+        # Realigns in-memory buffer and underlying stream to match server offset.
+        #
+        # @param instruction [Instruction::RealignBuffer] Realign instruction
+        #
         def execute_realign_buffer instruction
           server_offset = instruction.server_offset
           buffer_start = @buffer_start_offset
@@ -241,12 +315,25 @@ module Gapic
           end
         end
 
+        ##
+        # @private
+        # Slices the in-memory buffer when server offset falls within current buffer range.
+        #
+        # @param server_offset [Integer] Target server offset
+        #
         def realign_within_buffer server_offset
           slice_index = server_offset - @buffer_start_offset
           @buffer = @buffer.byteslice(slice_index..-1) || "".b
           @buffer_start_offset = server_offset
         end
 
+        ##
+        # @private
+        # Rewinds seekable stream when server offset is before current buffer window.
+        #
+        # @param server_offset [Integer] Target server offset
+        # @raise [UnseekableStreamError] If stream does not respond to #seek
+        #
         def realign_rewind_stream server_offset
           unless @config.stream.respond_to? :seek
             raise UnseekableStreamError,
@@ -258,6 +345,13 @@ module Gapic
           @buffer_start_offset = server_offset
         end
 
+        ##
+        # @private
+        # Fast-forwards stream by seeking or discarding bytes.
+        #
+        # @param server_offset [Integer] Target server offset
+        # @param buffer_end [Integer] Current end offset of buffered data
+        #
         def realign_fast_forward_stream server_offset, buffer_end
           @buffer = "".b
           if @config.stream.respond_to? :seek
@@ -274,6 +368,13 @@ module Gapic
           @buffer_start_offset = server_offset
         end
 
+        ##
+        # @private
+        # Fills internal buffer from stream up to target byte size or EOF.
+        #
+        # @param instruction [Instruction::FillBuffer] FillBuffer instruction
+        # @return [Event::ChunkRead] Chunk read event
+        #
         def execute_fill_buffer instruction
           target = instruction.target_bytesize
           eof = false
@@ -291,6 +392,13 @@ module Gapic
           Event::ChunkRead.new bytes_buffered: @buffer.bytesize, eof: eof
         end
 
+        ##
+        # @private
+        # Executes session initiation HTTP request.
+        #
+        # @param instruction [Instruction::SendStart] SendStart instruction
+        # @return [Event::HttpResponse, Event::RequestFailed, Event::GlobalDeadlineExceeded]
+        #
         def execute_send_start instruction
           policy = @start_retry_policy.dup.start!
           headers = start_headers instruction
@@ -326,6 +434,13 @@ module Gapic
           end
         end
 
+        ##
+        # @private
+        # Builds initiation HTTP headers from instruction and config.
+        #
+        # @param instruction [Instruction::SendStart] Start instruction
+        # @return [Hash<String, String>] HTTP request headers
+        #
         def start_headers instruction
           headers = { "X-Goog-Upload-Protocol" => "resumable", "X-Goog-Upload-Command" => "start" }
           headers["X-Goog-Upload-Header-Content-Type"] = @config.content_type if @config.content_type
@@ -333,6 +448,13 @@ module Gapic
           headers.merge(instruction.headers || {})
         end
 
+        ##
+        # @private
+        # Transmits a buffered chunk over HTTP.
+        #
+        # @param instruction [Instruction::SendChunk] SendChunk instruction
+        # @return [Event::HttpResponse, Event::RequestFailed, Event::GlobalDeadlineExceeded]
+        #
         def execute_send_chunk instruction
           headers = {
             "X-Goog-Upload-Command" => instruction.finalize ? "upload, finalize" : "upload",
@@ -348,6 +470,13 @@ module Gapic
                             method_name: "ResumableUpload.upload"
         end
 
+        ##
+        # @private
+        # Sends a standalone finalize command over HTTP.
+        #
+        # @param instruction [Instruction::SendFinalize] SendFinalize instruction
+        # @return [Event::HttpResponse, Event::RequestFailed, Event::GlobalDeadlineExceeded]
+        #
         def execute_send_finalize instruction
           headers = {
             "X-Goog-Upload-Command" => "finalize",
@@ -359,6 +488,13 @@ module Gapic
                             method_name: "ResumableUpload.finalize"
         end
 
+        ##
+        # @private
+        # Sends an offset query command over HTTP.
+        #
+        # @param instruction [Instruction::SendQuery] SendQuery instruction
+        # @return [Event::HttpResponse, Event::RequestFailed, Event::GlobalDeadlineExceeded]
+        #
         def execute_send_query instruction
           headers = { "X-Goog-Upload-Command" => "query", "Content-Length" => "0" }
           make_post_request instruction.url, headers: headers, body: "",
@@ -366,6 +502,13 @@ module Gapic
                             method_name: "ResumableUpload.query"
         end
 
+        ##
+        # @private
+        # Sends a cancellation command over HTTP.
+        #
+        # @param instruction [Instruction::SendCancel] SendCancel instruction
+        # @return [Event::HttpResponse, Event::RequestFailed, Event::GlobalDeadlineExceeded]
+        #
         def execute_send_cancel instruction
           headers = { "X-Goog-Upload-Command" => "cancel", "Content-Length" => "0" }
           make_post_request instruction.url, headers: headers, body: "",
@@ -373,6 +516,18 @@ module Gapic
                             method_name: "ResumableUpload.cancel"
         end
 
+        ##
+        # @private
+        # Dispatches an HTTP POST request through client stub.
+        #
+        # @param url [String] Target URL
+        # @param headers [Hash] Request headers
+        # @param body [String] Request body
+        # @param retry_policy [Gapic::Common::RetryPolicy] Command retry policy
+        # @param method_name [String, nil] RPC method name for logging
+        # @param start_attempt [Integer] Attempt counter
+        # @return [Event::HttpResponse, Event::RequestFailed, Event::GlobalDeadlineExceeded]
+        #
         def make_post_request url, headers:, body:, retry_policy:, method_name: nil, start_attempt: 1
           return Event::GlobalDeadlineExceeded.new if deadline_exceeded?
 
@@ -405,6 +560,13 @@ module Gapic
           event
         end
 
+        ##
+        # @private
+        # Converts client stub transport exceptions into canonical events.
+        #
+        # @param err [StandardError] Rescued transport error
+        # @return [Event::HttpResponse, Event::RequestFailed]
+        #
         def rescue_request_error err
           case err
           when Gapic::Rest::DeadlineExceededError
@@ -423,6 +585,13 @@ module Gapic
           end
         end
 
+        ##
+        # @private
+        # Converts Faraday client exceptions into canonical events.
+        #
+        # @param err [Faraday::Error] Rescued Faraday error
+        # @return [Event::HttpResponse, Event::RequestFailed]
+        #
         def rescue_faraday_error err
           if err.response && err.response[:status]
             rest_err = Gapic::Rest::Error.wrap_faraday_error err

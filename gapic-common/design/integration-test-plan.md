@@ -185,9 +185,9 @@ Tests Category 1 transient transport retries and Category 2 protocol recovery wo
   1. Server responds to every upload chunk with HTTP `500` and no `X-Goog-Upload-Status` header.
   2. `data_plane_retry_policy` treats missing `X-Goog-Upload-Status` as unretriable (`predicate` returns `false`), yielding `Event::HttpResponse(500)` to `Core`.
   3. `Core` classifies the response as Category 2 (`:response_cat2`), enters `:recovering`, queries the server (which returns `200 active` at offset `0`), and retries the upload.
-  4. This recovery loop repeats until the 1-second global session deadline expires and `Driver#run` raises `Gapic::Common::DeadlineExceededError`.
+  4. This recovery loop repeats until the 1-second global session deadline expires and `Driver#run` raises `Gapic::Rest::ResumableUpload::DeadlineExceededError`.
 * **Assertions**:
-  * Raises `Gapic::Common::DeadlineExceededError`.
+  * Raises `Gapic::Rest::ResumableUpload::DeadlineExceededError`.
   * `phases.count(:recovering) >= 2`.
 
 ### 2.4 Error on Start Suite (`integration/resumable_upload/error_on_start_test.rb`)

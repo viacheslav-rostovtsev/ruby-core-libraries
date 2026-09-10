@@ -26,12 +26,20 @@ module Gapic
         # Structured logging helper for a single Resumable Upload run.
         #
         class UploadLog
+          ##
+          # @private
+          # Recipes omitted from INFO lifecycle logging.
+          # @return [Array<Symbol>]
           SILENT_RECIPES = [
             :ack_chunk,                     # per-chunk transition, doesn't belong at INFO
             :ignore_duplicate_cancel,       # duplicate cancel signal, no state change
             :fail_with_unmatched_transition # raises before Decision exists, logged by #unmatched_transition
           ].freeze
 
+          ##
+          # @private
+          # Severity and message mapping for lifecycle transitions.
+          # @return [Hash<Symbol, Array>]
           LIFECYCLE = {
             start_session:               [:info, "Initiating resumable upload"],
             begin_transmission:          [:info, "Upload session established"],
@@ -51,13 +59,28 @@ module Gapic
             fail_with_request_error:     [:warn, "Resumable upload failed"]
           }.freeze
 
+          # @private
+          # @return [String]
           attr_reader :upload_id
 
+          ##
+          # @private
+          # Initializes a new UploadLog logger wrapper.
+          #
+          # @param stub_logger [Logger, Object] Underlying structured logger
+          # @param upload_id [String] Unique session identifier
+          #
           def initialize stub_logger, upload_id:
             @stub_logger = stub_logger
             @upload_id = upload_id
           end
 
+          ##
+          # @private
+          # Logs state machine transition decision at DEBUG level.
+          #
+          # @param decision [Decision] Decision snapshot
+          #
           def decision decision
             msg = "Rules: #{decision.from_status} + #{decision.shape} -> " \
                   "#{decision.recipe} -> #{decision.next_state.status}"
@@ -74,6 +97,13 @@ module Gapic
             )
           end
 
+          ##
+          # @private
+          # Logs high-level protocol lifecycle milestone if configured.
+          #
+          # @param decision [Decision] Decision snapshot
+          # @param config [CompleteUploadConfig] Upload configuration
+          #
           def lifecycle decision, config
             return if SILENT_RECIPES.include? decision.recipe
 
@@ -84,6 +114,18 @@ module Gapic
             entry severity, message, recipe: decision.recipe, **extra_fields
           end
 
+          ##
+          # @private
+          # Logs an outgoing HTTP request at DEBUG level.
+          #
+          # @param method [String] HTTP method
+          # @param url [String] Request URL
+          # @param headers [Hash] Request headers
+          # @param start_attempt [Integer] Attempt index for start command
+          # @param body_size [Integer, nil] Byte size of request payload
+          # @param body [Object, nil] Request payload
+          # @param body_is_error [Boolean] Whether body contains an error payload
+          #
           def wire_send method:, url:, headers:, start_attempt:, body_size: nil, body: nil, body_is_error: false
             command = Rules.header_value headers, "x-goog-upload-command"
             offset = Rules.header_value headers, "x-goog-upload-offset"
@@ -101,6 +143,12 @@ module Gapic
             entry :debug, "Sending #{method} request", **fields
           end
 
+          ##
+          # @private
+          # Logs a received HTTP response at DEBUG level.
+          #
+          # @param event [Event::HttpResponse] Received HTTP event
+          #
           def wire_receive event
             upload_status = Rules.header_value event.headers, "x-goog-upload-status"
             size_recv = Rules.header_value event.headers, "x-goog-upload-size-received"
@@ -119,6 +167,12 @@ module Gapic
             entry :debug, "Received HTTP #{event.status}", **fields
           end
 
+          ##
+          # @private
+          # Logs a network or transport failure at DEBUG level.
+          #
+          # @param event [Event::RequestFailed] Failure event
+          #
           def wire_failure event
             entry(
               :debug,
@@ -128,6 +182,15 @@ module Gapic
             )
           end
 
+          ##
+          # @private
+          # Logs buffer realignment action.
+          #
+          # @param action [String] Realignment action description
+          # @param server_offset [Integer] Target server offset
+          # @param current_offset [Integer] Current buffer start offset
+          # @param unseekable [Boolean] Whether rewind was attempted on an unseekable stream
+          #
           def buffer_realign action, server_offset:, current_offset:, unseekable: false
             if unseekable
               entry(
@@ -148,6 +211,14 @@ module Gapic
             )
           end
 
+          ##
+          # @private
+          # Logs an invalid or unmatched state machine transition at WARN level.
+          #
+          # @param state [State] Current state
+          # @param event [Object] Triggering event
+          # @param error [StandardError] Resulting error
+          #
           def unmatched_transition state, event, error
             entry(
               :warn,
@@ -160,12 +231,28 @@ module Gapic
 
           private
 
+          ##
+          # @private
+          # Formats response body for wire log entry.
+          #
+          # @param event [Event::HttpResponse] Response event
+          # @param err [Gapic::Rest::Error, nil] Error instance
+          # @return [String, nil] Formatted body
+          #
           def wire_receive_body event, err
             return Abridge.bytes event.body if event.status < 400
 
             err&.message ? Abridge.error_body(err.message) : Abridge.error_body(event.body)
           end
 
+          ##
+          # @private
+          # Extracts relevant state fields for lifecycle logging.
+          #
+          # @param decision [Decision] Decision snapshot
+          # @param config [CompleteUploadConfig] Upload configuration
+          # @return [Hash] Metadata fields for log entry
+          #
           def lifecycle_fields decision, config
             state = decision.next_state
             case decision.recipe
@@ -192,6 +279,13 @@ module Gapic
             end
           end
 
+          ##
+          # @private
+          # Extracts error and response details for failure lifecycle logs.
+          #
+          # @param state [State] Current protocol state
+          # @return [Hash] Failure metadata fields
+          #
           def failure_fields state
             err = state.last_error
             fields = { error: err&.message || err.to_s }
@@ -201,6 +295,14 @@ module Gapic
             fields
           end
 
+          ##
+          # @private
+          # Dispatches structured log entry to stub logger.
+          #
+          # @param severity [Symbol] Log severity level
+          # @param log_msg [String] Primary log message
+          # @param fields [Hash] Structured key-value fields
+          #
           def entry severity, log_msg, **fields
             @stub_logger.public_send severity do |builder|
               builder.set_system_name

@@ -68,6 +68,22 @@ module Gapic
         :data_plane_retry_policy,
         :on_progress
       ) do
+        ##
+        # Initializes a new upload configuration.
+        #
+        # @param initial_url [String] Initial endpoint URI for session initiation
+        # @param stream [IO] Binary input stream to upload
+        # @param initial_body [String, nil] Request payload for session initiation
+        # @param initial_headers [Hash<String, String>] Additional headers for initiation
+        # @param upload_size [Integer, nil] Total upload bytes if known upfront
+        # @param chunk_size [Integer, nil] Explicit chunk size in bytes
+        # @param content_type [String, nil] MIME type of uploaded media
+        # @param timeout [Numeric, nil] Total upload timeout in seconds (zero/negative values treated as nil)
+        # @param start_retry_policy [Gapic::Common::RetryPolicy, Hash, nil] Retry policy for session initiation
+        # @param control_plane_retry_policy [Gapic::Common::RetryPolicy, Hash, nil] Retry policy for control commands
+        # @param data_plane_retry_policy [Gapic::Common::RetryPolicy, Hash, nil] Retry policy for data commands
+        # @param on_progress [Proc, nil] Callback invoked as `->(progress)` with a {Progress} instance
+        #
         def initialize initial_url:,
                        stream:,
                        initial_body: nil,
@@ -101,7 +117,7 @@ module Gapic
       # Immutable progress snapshot passed to the `on_progress` callback.
       #
       # @!attribute [r] phase
-      #   @return [Symbol] Current upload phase, one of {PHASES}
+      #   @return [Symbol] Current upload phase, one of {Progress::PHASES}
       # @!attribute [r] bytes_uploaded
       #   @return [Integer] Cumulative bytes acknowledged by the server. Note that this is the
       #     server-confirmed offset and is not guaranteed to be monotonic — a server rewind during
@@ -114,9 +130,14 @@ module Gapic
         :bytes_uploaded,
         :total_bytes
       ) do
-        # Important to define it via `self.`, since this block is not a class body
-        self::PHASES = [:initiating, :uploading, :recovering, :finalizing, :cancelling, :completed].freeze
-
+        ##
+        # Initializes a new progress snapshot.
+        #
+        # @param phase [Symbol] Current upload phase, one of {Progress::PHASES}
+        # @param bytes_uploaded [Integer] Cumulative bytes acknowledged by the server
+        # @param total_bytes [Integer, nil] Total upload size in bytes if known, or nil
+        # @raise [ArgumentError] If the phase is not one of {Progress::PHASES}
+        #
         def initialize phase:, bytes_uploaded:, total_bytes: nil
           # Must use `self.class::` to access constants from the class scope
           unless self.class::PHASES.include? phase
@@ -132,7 +153,28 @@ module Gapic
       end
 
       ##
+      # Allowed lifecycle phases for an upload session.
+      # @return [Array<Symbol>]
+      Progress::PHASES = [:initiating, :uploading, :recovering, :finalizing, :cancelling, :completed].freeze
+
+      ##
+      # @private
       # Immutable state snapshot representing the current protocol progression.
+      #
+      # @!attribute [r] status
+      #   @return [Symbol] Protocol lifecycle status symbol
+      # @!attribute [r] upload_url
+      #   @return [String, nil] Session upload URL returned by Scotty backend
+      # @!attribute [r] offset
+      #   @return [Integer] Contiguous bytes acknowledged by server
+      # @!attribute [r] chunk_size
+      #   @return [Integer] Resolved effective chunk size in bytes
+      # @!attribute [r] chunk_granularity
+      #   @return [Integer, nil] Alignment modulus returned by server
+      # @!attribute [r] in_flight_length
+      #   @return [Integer] Byte length of in-flight chunk currently being transmitted
+      # @!attribute [r] last_error
+      #   @return [StandardError, nil] Terminal exception if in an error or rejected status
       #
       State = Data.define(
         :status,
@@ -143,6 +185,18 @@ module Gapic
         :in_flight_length,
         :last_error
       ) do
+        ##
+        # @private
+        # Initializes a protocol state snapshot.
+        #
+        # @param status [Symbol] Protocol lifecycle status symbol
+        # @param upload_url [String, nil] Session upload URL
+        # @param offset [Integer] Contiguous bytes acknowledged by server
+        # @param chunk_size [Integer] Resolved effective chunk size in bytes
+        # @param chunk_granularity [Integer, nil] Alignment modulus returned by server
+        # @param in_flight_length [Integer] Byte length of in-flight chunk
+        # @param last_error [StandardError, nil] Terminal exception
+        #
         def initialize status: :initializing,
                        upload_url: nil,
                        offset: 0,
@@ -163,6 +217,7 @@ module Gapic
       end
 
       ##
+      # @private
       # Immutable decision snapshot emitted by Rules.decide.
       #
       # @!attribute [r] from_status
@@ -183,6 +238,16 @@ module Gapic
         :next_state,
         :instructions
       ) do
+        ##
+        # @private
+        # Initializes a decision snapshot.
+        #
+        # @param from_status [Symbol] The protocol status before the transition
+        # @param shape [Symbol] The canonical event shape
+        # @param recipe [Symbol] Selected transition recipe method name
+        # @param next_state [State] Resulting protocol state snapshot
+        # @param instructions [Array<Object>] Emitted instructions for the Driver
+        #
         def initialize from_status:, shape:, recipe:, next_state:, instructions: []
           super(
             from_status:  from_status,

@@ -21,9 +21,15 @@ module Gapic
   module Rest
     module ResumableUpload
       ##
+      # @private
       # Default retry policy generators for control plane and data plane requests.
       #
       module RetryPolicies
+        ##
+        # @private
+        # Retry predicate determining retriability for session initiation requests.
+        # Retries missing status header on non-fatal codes.
+        # @return [Proc]
         START_PREDICATE = lambda do |error_or_response|
           status = extract_status_code error_or_response
           return false if Rules::FATAL_STATUS_CODES.include? status
@@ -36,6 +42,11 @@ module Gapic
           nil
         end
 
+        ##
+        # @private
+        # Retry predicate determining retriability for data plane requests.
+        # Disallows retry when upload status header is missing.
+        # @return [Proc]
         DATA_PLANE_PREDICATE = lambda do |error_or_response|
           headers = extract_headers error_or_response
           if headers
@@ -45,6 +56,10 @@ module Gapic
           nil
         end
 
+        ##
+        # @private
+        # Default options for start command retry policy.
+        # @return [Hash]
         START_DEFAULTS = {
           retry_codes:     ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"].freeze,
           initial_delay:   1.0,
@@ -53,6 +68,10 @@ module Gapic
           retry_predicate: START_PREDICATE
         }.freeze
 
+        ##
+        # @private
+        # Default options for query and cancel commands retry policy.
+        # @return [Hash]
         CONTROL_PLANE_DEFAULTS = {
           retry_codes:   ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"].freeze,
           initial_delay: 1.0,
@@ -60,6 +79,10 @@ module Gapic
           multiplier:    1.3
         }.freeze
 
+        ##
+        # @private
+        # Default options for upload and finalize commands retry policy.
+        # @return [Hash]
         DATA_PLANE_DEFAULTS = {
           retry_codes:     ["UNAVAILABLE", "DEADLINE_EXCEEDED", "RESOURCE_EXHAUSTED", "INTERNAL"].freeze,
           initial_delay:   1.0,
@@ -69,6 +92,7 @@ module Gapic
         }.freeze
 
         ##
+        # @private
         # Default retry policy for session initiation requests (start).
         # Missing X-Goog-Upload-Status header is retriable across any response code,
         # including 200 (predicate returns true).
@@ -79,6 +103,7 @@ module Gapic
         end
 
         ##
+        # @private
         # Default retry policy for session control requests (query, cancel).
         # Does not retry on missing X-Goog-Upload-Status header.
         #
@@ -88,6 +113,7 @@ module Gapic
         end
 
         ##
+        # @private
         # Default retry policy for data plane requests (upload, finalize).
         # Missing X-Goog-Upload-Status header is unretriable (predicate returns false).
         #
@@ -97,9 +123,10 @@ module Gapic
         end
 
         ##
+        # @private
         # Extracts headers hash from Faraday response or error object.
         #
-        # @param error_or_response [Object]
+        # @param error_or_response [Object] Response, error, or hash object
         # @return [Hash, nil]
         def self.extract_headers error_or_response
           if error_or_response.respond_to? :headers
@@ -112,9 +139,10 @@ module Gapic
         end
 
         ##
+        # @private
         # Extracts HTTP status code from Faraday response, error, or event object.
         #
-        # @param error_or_response [Object]
+        # @param error_or_response [Object] Response, error, or event object
         # @return [Integer, nil]
         def self.extract_status_code error_or_response
           if error_or_response.respond_to?(:status_code) && error_or_response.status_code.is_a?(Integer)
