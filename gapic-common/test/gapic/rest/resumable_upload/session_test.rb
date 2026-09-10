@@ -61,6 +61,16 @@ class SessionTest < Minitest::Test
     end
   end
 
+  class StreamWithoutPos
+    def initialize string
+      @io = StringIO.new string
+    end
+
+    def read length = nil
+      @io.read length
+    end
+  end
+
   def build_session stub: nil, stream: nil, upload_size: 10, chunk_size: 4, **kwargs
     stream ||= StringIO.new "0123456789"
     stub ||= ScriptedClientStub.new
@@ -81,32 +91,28 @@ class SessionTest < Minitest::Test
 
   def test_initialize_mandatory_arguments
     assert_raises ArgumentError do
-      Session.new stream: StringIO.new, initial_url: "http://x", initial_body: ""
+      Session.new stream: StringIO.new, initial_url: "http://x"
     end
 
     assert_raises ArgumentError do
-      Session.new client_stub: ScriptedClientStub.new, initial_url: "http://x", initial_body: ""
+      Session.new client_stub: ScriptedClientStub.new, initial_url: "http://x"
     end
 
     assert_raises ArgumentError do
-      Session.new client_stub: ScriptedClientStub.new, stream: StringIO.new, initial_body: ""
-    end
-
-    assert_raises ArgumentError do
-      Session.new client_stub: ScriptedClientStub.new, stream: StringIO.new, initial_url: "http://x"
+      Session.new client_stub: ScriptedClientStub.new, stream: StringIO.new
     end
   end
 
   def test_initialize_defaults
     session = Session.new(
-      client_stub:  ScriptedClientStub.new,
-      stream:       StringIO.new("abc"),
-      initial_url:  "https://example.com/initiate",
-      initial_body: "",
-      upload_size:  300
+      client_stub: ScriptedClientStub.new,
+      stream:      StringIO.new("abc"),
+      initial_url: "https://example.com/initiate",
+      upload_size: 300
     )
 
     assert_equal 300, session.upload_size
+    assert_nil session.initial_body
     assert_equal({}, session.initial_headers)
     assert_nil session.chunk_size
     assert_nil session.content_type
@@ -119,7 +125,7 @@ class SessionTest < Minitest::Test
   end
 
   # ============================================================================
-  # 2. Observable States: Unbound
+  # 2. Observable States: Unbound & Bound
   # ============================================================================
 
   def test_initial_unbound_state
@@ -131,19 +137,11 @@ class SessionTest < Minitest::Test
     refute session.running?
   end
 
-  def test_bare_resume_on_unbound_session_raises_session_state_error
-    session = build_session
-    err = assert_raises SessionStateError do
-      session.resume
-    end
-    assert_includes err.message, "Cannot resume unbound session without resume_handle or upload_url"
-  end
-
   # ============================================================================
-  # 3. Start Lifecycle & Bound Transitions
+  # 3. Start Lifecycle & Single-Run Contract
   # ============================================================================
 
-  def test_start_successful_upload_transitions_to_bound_dead
+  def test_start_successful_upload_transitions_to_bound
     responses = [
       # Initiation response
       FakeResponse.new(
@@ -188,7 +186,7 @@ class SessionTest < Minitest::Test
     assert_nil session.resume_handle
   end
 
-  def test_start_when_already_bound_raises_session_state_error
+  def test_second_start_raises_session_state_error
     responses = [
       FakeResponse.new(
         status:  200,
@@ -218,17 +216,11 @@ class SessionTest < Minitest::Test
     err = assert_raises SessionStateError do
       session.start
     end
-    assert_includes err.message, "Session is already bound to an upload"
+    assert_includes err.message, "Session has already executed a run"
   end
 
-  # ============================================================================
-  # 4. Resume Forms: Three Mutually Exclusive Forms
-  # ============================================================================
-
-  def test_resume_form1_bare_resume_on_bound_alive_session
-    # First run fails during recovery query with connection failure
-    stub = ScriptedClientStub.new [
-      # Initiation succeeds -> binds session to upload URL
+  def test_resume_after_start_raises_session_state_error
+    responses = [
       FakeResponse.new(
         status:  200,
         headers: {
@@ -238,160 +230,32 @@ class SessionTest < Minitest::Test
         },
         body:    ""
       ),
-      # Chunk 1 returns 503 -> triggers Category 2 recovery
-      FakeResponse.new(status: 503, headers: {}, body: "Service Unavailable"),
-      # Recovery query fails with connection error -> raises RequestFailedError
-      Faraday::ConnectionFailed.new("network connection failed")
-    ]
-
-    session = build_session stub: stub, upload_size: 10, chunk_size: 4
-
-    raised = assert_raises RequestFailedError do
-      session.start
-    end
-
-    assert_includes raised.message, "(upload session is resumable: see #resume_handle)"
-    refute_nil raised.resume_handle
-    # State: Bound and Alive
-    assert session.bound?
-    assert session.resumable?
-    refute session.running?
-    assert_equal "https://upload.example.com/session_1", session.upload_url
-    assert_equal "https://upload.example.com/session_1", session.resume_handle.upload_url
-
-    # Second run: bare resume continues the bound upload
-    recovery_responses = [
-      # Query response
-      FakeResponse.new(
-        status:  200,
-        headers: {
-          "x-goog-upload-status"        => "active",
-          "x-goog-upload-size-received" => "0"
-        },
-        body:    ""
-      ),
-      # Chunk 1
-      FakeResponse.new(
-        status:  200,
-        headers: { "x-goog-upload-status" => "active" },
-        body:    ""
-      ),
-      # Chunk 2
-      FakeResponse.new(
-        status:  200,
-        headers: { "x-goog-upload-status" => "active" },
-        body:    ""
-      ),
-      # Chunk 3 (final)
       FakeResponse.new(
         status:  200,
         headers: { "x-goog-upload-status" => "final" },
-        body:    '{"resumed":true}'
+        body:    '{"done":true}'
       )
     ]
-    stub.instance_variable_set :@responses, recovery_responses
+    session = build_session(
+      stub:        ScriptedClientStub.new(responses),
+      stream:      StringIO.new("01"),
+      upload_size: 2,
+      chunk_size:  4
+    )
+    session.start
 
-    result = session.resume
-    assert_equal '{"resumed":true}', result
-    assert session.bound?
-    refute session.resumable?
-  end
-
-  def test_resume_form1_bare_resume_on_seekable_stream_without_manual_rewind
-    stub = ScriptedClientStub.new [
-      FakeResponse.new(
-        status:  200,
-        headers: {
-          "x-goog-upload-status"            => "active",
-          "x-goog-upload-url"               => "https://upload.example.com/session_bare",
-          "x-goog-upload-chunk-granularity" => "4"
-        },
-        body:    ""
-      ),
-      FakeResponse.new(status: 503, headers: {}, body: "Service Unavailable"),
-      Faraday::ConnectionFailed.new("network connection failed")
-    ]
-    session = build_session stub: stub, stream: StringIO.new("01"), upload_size: 2, chunk_size: 4
-    assert_raises RequestFailedError do
-      session.start
+    handle = ResumeHandle.new upload_url: "https://upload.example.com/session_1", chunk_size: 4
+    err = assert_raises SessionStateError do
+      session.resume resume_handle: handle
     end
-
-    assert session.bound?
-    assert session.resumable?
-
-    stub.instance_variable_set :@responses, [
-      FakeResponse.new(
-        status:  200,
-        headers: {
-          "x-goog-upload-status"        => "active",
-          "x-goog-upload-size-received" => "0"
-        },
-        body:    ""
-      ),
-      FakeResponse.new(status: 200, headers: { "x-goog-upload-status" => "final" }, body: '{"resumed_bare":true}')
-    ]
-
-    result = session.resume
-    assert_equal '{"resumed_bare":true}', result
-    assert session.bound?
-    refute session.resumable?
+    assert_includes err.message, "Session has already executed a run"
   end
 
-  def test_resume_form1_bare_resume_on_unseekable_stream_derives_offset
-    stream = UnseekableStream.new "0123456789"
-    stub = ScriptedClientStub.new [
-      # Initiation
-      FakeResponse.new(
-        status:  200,
-        headers: {
-          "x-goog-upload-status"            => "active",
-          "x-goog-upload-url"               => "https://upload.example.com/session_unseekable",
-          "x-goog-upload-chunk-granularity" => "4"
-        },
-        body:    ""
-      ),
-      # Chunk 1 (0-3) returns 503 -> recovery
-      FakeResponse.new(status: 503, headers: {}, body: "Service Unavailable"),
-      # Recovery query fails -> RequestFailedError
-      Faraday::ConnectionFailed.new("network connection failed")
-    ]
+  # ============================================================================
+  # 4. Resume Forms: Explicit URL or ResumeHandle
+  # ============================================================================
 
-    session = build_session stub: stub, stream: stream, upload_size: 10, chunk_size: 4
-    assert_raises RequestFailedError do
-      session.start
-    end
-
-    assert session.bound?
-    assert session.resumable?
-    assert_equal 4, stream.pos
-
-    # Script responses for bare resume
-    stub.instance_variable_set :@responses, [
-      # Recovery query on resume: server acknowledges 4 bytes received
-      FakeResponse.new(
-        status:  200,
-        headers: {
-          "x-goog-upload-status"        => "active",
-          "x-goog-upload-size-received" => "4"
-        },
-        body:    ""
-      ),
-      # Chunk 2 (4-7)
-      FakeResponse.new(status: 200, headers: { "x-goog-upload-status" => "active" }, body: ""),
-      # Final chunk (8-9)
-      FakeResponse.new(status: 200, headers: { "x-goog-upload-status" => "final" }, body: '{"unseekable_resumed":true}')
-    ]
-
-    result = session.resume
-    assert_equal '{"unseekable_resumed":true}', result
-    assert_equal 10, stream.pos
-    assert session.bound?
-    refute session.resumable?
-    # Verify derived stream_offset was 4 in the resume driver config
-    assert_equal 4, session.instance_variable_get(:@last_driver).instance_variable_get(:@config).stream_offset
-  end
-
-  def test_resume_form2_explicit_url_and_chunk_size_binds_unbound_session
+  def test_resume_explicit_url_and_chunk_size_binds_and_executes
     responses = [
       FakeResponse.new(
         status:  200,
@@ -418,7 +282,7 @@ class SessionTest < Minitest::Test
     assert_equal "https://upload.example.com/direct", session.upload_url
   end
 
-  def test_resume_form3_resume_handle_binds_unbound_session
+  def test_resume_resume_handle_binds_and_executes
     responses = [
       FakeResponse.new(
         status:  200,
@@ -447,41 +311,7 @@ class SessionTest < Minitest::Test
     assert_equal "https://upload.example.com/from_handle", session.upload_url
   end
 
-  # ============================================================================
-  # 5. Resume Argument Shape & Lifecycle Violations
-  # ============================================================================
-
-  def test_resume_mixing_arguments_raises_argument_error
-    session = build_session
-    handle = ResumeHandle.new upload_url: "https://example.com", chunk_size: 4
-
-    # Mixing resume_handle with upload_url
-    assert_raises ArgumentError do
-      session.resume resume_handle: handle, upload_url: "https://example.com"
-    end
-
-    # Mixing resume_handle with chunk_size
-    assert_raises ArgumentError do
-      session.resume resume_handle: handle, chunk_size: 4
-    end
-
-    # upload_url without chunk_size
-    assert_raises ArgumentError do
-      session.resume upload_url: "https://example.com"
-    end
-
-    # chunk_size without upload_url
-    assert_raises ArgumentError do
-      session.resume chunk_size: 4
-    end
-
-    # Invalid positional argument type
-    assert_raises ArgumentError do
-      session.resume handle
-    end
-  end
-
-  def test_resume_rebinding_different_upload_url_raises_session_state_error
+  def test_start_after_resume_raises_session_state_error
     responses = [
       FakeResponse.new(
         status:  200,
@@ -491,72 +321,182 @@ class SessionTest < Minitest::Test
         },
         body:    ""
       ),
-      FakeResponse.new(
-        status:  200,
-        headers: { "x-goog-upload-status" => "final" },
-        body:    '{"done":true}'
-      )
+      FakeResponse.new(status: 200, headers: { "x-goog-upload-status" => "final" }, body: '{"ok":true}')
     ]
-    session = build_session(
-      stub:        ScriptedClientStub.new(responses),
-      stream:      StringIO.new("01"),
-      upload_size: 2,
-      chunk_size:  4
-    )
-    session.resume upload_url: "https://upload.example.com/session_a", chunk_size: 4
+    stub = ScriptedClientStub.new responses
+    session = build_session stub: stub, stream: StringIO.new("01"), upload_size: 2, chunk_size: 4
+    session.resume upload_url: "https://upload.example.com/direct", chunk_size: 4
 
     assert session.bound?
-    assert_equal "https://upload.example.com/session_a", session.upload_url
-
-    # Attempting to resume with a different upload_url
     err = assert_raises SessionStateError do
-      session.resume upload_url: "https://upload.example.com/session_b", chunk_size: 4
+      session.start
     end
-    assert_includes err.message, "Session is already bound to a different upload"
-
-    handle_b = ResumeHandle.new upload_url: "https://upload.example.com/session_b", chunk_size: 4
-    err2 = assert_raises SessionStateError do
-      session.resume resume_handle: handle_b
-    end
-    assert_includes err2.message, "Session is already bound to a different upload"
+    assert_includes err.message, "Session has already executed a run"
   end
 
-  def test_resume_on_bound_dead_session_raises_session_state_error
+  def test_second_resume_raises_session_state_error
     responses = [
       FakeResponse.new(
         status:  200,
         headers: {
+          "x-goog-upload-status"        => "active",
+          "x-goog-upload-size-received" => "0"
+        },
+        body:    ""
+      ),
+      FakeResponse.new(status: 200, headers: { "x-goog-upload-status" => "final" }, body: '{"ok":true}')
+    ]
+    stub = ScriptedClientStub.new responses
+    session = build_session stub: stub, stream: StringIO.new("01"), upload_size: 2, chunk_size: 4
+    session.resume upload_url: "https://upload.example.com/direct", chunk_size: 4
+
+    assert session.bound?
+    err = assert_raises SessionStateError do
+      session.resume upload_url: "https://upload.example.com/direct", chunk_size: 4
+    end
+    assert_includes err.message, "Session has already executed a run"
+  end
+
+  # ============================================================================
+  # 5. Argument Shape & Preconditions
+  # ============================================================================
+
+  def test_resume_without_arguments_raises_argument_error
+    session = build_session
+    err = assert_raises ArgumentError do
+      session.resume
+    end
+    assert_includes err.message, "Must provide either resume_handle or upload_url and chunk_size"
+  end
+
+  def test_resume_mixing_arguments_raises_argument_error
+    session = build_session
+    handle = ResumeHandle.new upload_url: "https://example.com", chunk_size: 4
+
+    assert_raises ArgumentError do
+      session.resume resume_handle: handle, upload_url: "https://example.com"
+    end
+
+    assert_raises ArgumentError do
+      session.resume resume_handle: handle, chunk_size: 4
+    end
+
+    assert_raises ArgumentError do
+      session.resume upload_url: "https://example.com"
+    end
+
+    assert_raises ArgumentError do
+      session.resume chunk_size: 4
+    end
+
+    assert_raises ArgumentError do
+      session.resume handle
+    end
+  end
+
+  def test_resume_with_non_zero_stream_pos_raises_argument_error
+    stream = StringIO.new "0123456789"
+    stream.seek 4
+
+    session = build_session stream: stream
+    handle = ResumeHandle.new upload_url: "https://upload.example.com/from_handle", chunk_size: 4
+
+    err = assert_raises ArgumentError do
+      session.resume resume_handle: handle
+    end
+    assert_includes err.message, "Stream must be positioned at byte 0 to resume an upload (got pos 4)"
+  end
+
+  def test_resume_with_stream_without_pos_is_trusted
+    stream = StreamWithoutPos.new "01"
+    responses = [
+      FakeResponse.new(
+        status:  200,
+        headers: {
+          "x-goog-upload-status"        => "active",
+          "x-goog-upload-size-received" => "0"
+        },
+        body:    ""
+      ),
+      FakeResponse.new(status: 200, headers: { "x-goog-upload-status" => "final" }, body: '{"ok":true}')
+    ]
+    stub = ScriptedClientStub.new responses
+    session = build_session stub: stub, stream: stream, upload_size: 2, chunk_size: 4
+
+    result = session.resume upload_url: "https://upload.example.com/direct", chunk_size: 4
+    assert_equal '{"ok":true}', result
+  end
+
+  # ============================================================================
+  # 6. Cross-Session Resumption
+  # ============================================================================
+
+  def test_cross_session_resumption_from_failed_run
+    stream = StringIO.new "0123456789"
+    stub1 = ScriptedClientStub.new [
+      # Initiation succeeds
+      FakeResponse.new(
+        status:  200,
+        headers: {
           "x-goog-upload-status"            => "active",
-          "x-goog-upload-url"               => "https://upload.example.com/session_dead",
+          "x-goog-upload-url"               => "https://upload.example.com/session_cross",
           "x-goog-upload-chunk-granularity" => "4"
         },
         body:    ""
       ),
+      # Chunk 1 returns 503
+      FakeResponse.new(status: 503, headers: {}, body: "Service Unavailable"),
+      # Recovery query fails
+      Faraday::ConnectionFailed.new("network connection failed")
+    ]
+
+    session1 = build_session stub: stub1, stream: stream, upload_size: 10, chunk_size: 4
+    raised = assert_raises RequestFailedError do
+      session1.start
+    end
+
+    assert session1.bound?
+    assert session1.resumable?
+    handle = session1.resume_handle
+    refute_nil handle
+    assert_equal handle, raised.resume_handle
+    assert_equal "https://upload.example.com/session_cross", handle.upload_url
+    assert_equal 4, handle.chunk_size
+
+    # Prepare for session 2: rewind the stream to byte 0
+    stream.rewind
+    assert_equal 0, stream.pos
+
+    stub2 = ScriptedClientStub.new [
+      # Recovery query on resume: server acknowledges 0 bytes received
       FakeResponse.new(
         status:  200,
-        headers: { "x-goog-upload-status" => "final" },
-        body:    '{"completed":true}'
-      )
+        headers: {
+          "x-goog-upload-status"        => "active",
+          "x-goog-upload-size-received" => "0"
+        },
+        body:    ""
+      ),
+      # Chunk 1
+      FakeResponse.new(status: 200, headers: { "x-goog-upload-status" => "active" }, body: ""),
+      # Chunk 2
+      FakeResponse.new(status: 200, headers: { "x-goog-upload-status" => "active" }, body: ""),
+      # Chunk 3 (final)
+      FakeResponse.new(status: 200, headers: { "x-goog-upload-status" => "final" }, body: '{"resumed":true}')
     ]
-    session = build_session(
-      stub:        ScriptedClientStub.new(responses),
-      stream:      StringIO.new("01"),
-      upload_size: 2,
-      chunk_size:  4
-    )
-    session.start
 
-    assert session.bound?
-    refute session.resumable?
+    session2 = build_session stub: stub2, stream: stream, upload_size: 10, chunk_size: 4
+    refute session2.bound?
 
-    err = assert_raises SessionStateError do
-      session.resume
-    end
-    assert_includes err.message, "Session is dead and cannot be resumed"
+    result = session2.resume resume_handle: handle
+    assert_equal '{"resumed":true}', result
+    assert session2.bound?
+    refute session2.resumable?
+    assert_nil session2.resume_handle
   end
 
   # ============================================================================
-  # 6. Concurrency & Running Guard
+  # 7. Concurrency & Running Guard
   # ============================================================================
 
   def test_running_guard_prevents_concurrent_runs
@@ -600,8 +540,9 @@ class SessionTest < Minitest::Test
     assert session.running?
 
     # Concurrent call from another thread raises SessionStateError
+    handle = ResumeHandle.new upload_url: "https://upload.example.com/session_block", chunk_size: 4
     err = assert_raises SessionStateError do
-      session.resume
+      session.resume resume_handle: handle
     end
     assert_includes err.message, "A run is already in progress for this session"
 
@@ -619,7 +560,7 @@ class SessionTest < Minitest::Test
   end
 
   # ============================================================================
-  # 7. Driver#upload_url Direct Verification
+  # 8. Driver#upload_url Direct Verification
   # ============================================================================
 
   def test_driver_upload_url_across_statuses

@@ -289,39 +289,13 @@ class DriverBufferTest < Minitest::Test
     assert_equal "0123456789", stream.read(10)
   end
 
-  def test_driver_stream_position_tracking
-    stream = StringIO.new "0123456789" * 10
-    driver = build_driver stream: stream
-    assert_equal 0, driver.stream_position
-
-    driver.instance_variable_set :@buffer_start_offset, 100
-    driver.instance_variable_set :@buffer, "01234".b
-    assert_equal 105, driver.stream_position
-  end
-
-  def test_driver_honors_stream_offset_from_resume_config
-    stream = StringIO.new "0123456789"
-    resume_config = ResumeUploadConfig.new(
-      upload_url:    "https://upload.example.com/session_resume",
-      chunk_size:    256,
-      stream:        stream,
-      stream_offset: 500
-    )
-    driver = Driver.new client_stub: @dummy_client, config: resume_config
-
-    assert_equal 500, driver.instance_variable_get(:@buffer_start_offset)
-    assert_equal 500, driver.stream_position
-    assert_equal "".b, driver.instance_variable_get(:@buffer)
-  end
-
   def test_fast_forward_unseekable_stream_raises_stream_mismatch_on_unexpected_eof
     # Stream has only 20 bytes total
     stream = UnseekableStream.new "01234567890123456789"
     resume_config = ResumeUploadConfig.new(
-      upload_url:    "https://upload.example.com/session_resume",
-      chunk_size:    256,
-      stream:        stream,
-      stream_offset: 0
+      upload_url: "https://upload.example.com/session_resume",
+      chunk_size: 256,
+      stream:     stream
     )
     driver = Driver.new client_stub: @dummy_client, config: resume_config
     driver.core.instance_variable_set(

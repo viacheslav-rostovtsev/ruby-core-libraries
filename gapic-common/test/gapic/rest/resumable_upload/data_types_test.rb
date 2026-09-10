@@ -142,7 +142,6 @@ class DataTypesTest < Minitest::Test
     assert_equal "https://upload.example.com/session1", config.upload_url
     assert_equal 1024, config.chunk_size
     assert_same stream, config.stream
-    assert_equal 0, config.stream_offset
     assert_nil config.upload_size
     assert_nil config.content_type
     assert_nil config.timeout
@@ -177,10 +176,6 @@ class DataTypesTest < Minitest::Test
 
     assert_raises ArgumentError do
       ResumeUploadConfig.new upload_url: "https://example.com", chunk_size: 1024, stream: nil
-    end
-
-    assert_raises ArgumentError do
-      ResumeUploadConfig.new upload_url: "https://example.com", chunk_size: 1024, stream: stream, stream_offset: -1
     end
   end
 end

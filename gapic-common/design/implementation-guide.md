@@ -20,9 +20,9 @@ graph TD
 ### 1.0 Domain Vocabulary
 *   **Upload**: Server-side entity created by a successful session initiation (`start`), identified by `upload_url`.
 *   **Resume Handle (`ResumeHandle`)**: An immutable snapshot (`upload_url`, `chunk_size`) identifying an upload for resumption.
-*   **Session (`Session`)**: Client-side transfer coordinator; exactly 1 per logical transfer. It owns the input stream and configuration options, executing runs against exactly one upload.
+*   **Session (`Session`)**: Client-side transfer coordinator; performs exactly one run (`start` or `resume`), never both, never twice. It owns the input stream and configuration options.
 *   **Run**: One invocation of `Driver#run` (either a start or resume execution).
-*   **Bound**: The property that a session knows its upload (`!session.upload_url.nil?`). Set by `start`, or immediately by `resume`. A bound session never re-binds.
+*   **Bound**: The property that a session has executed a run or is bound to an upload (`session.bound?`). A session becomes bound when `start` or `resume` begins execution. A bound session never runs again.
 
 ### 1.1 Driver (Synchronous I/O Adapter)
 The `Driver` executes all operations with side-effects. It interacts with HTTP transport via `Gapic::Rest::ClientStub`, reads binary data from local input streams, tracks monotonic execution deadlines, and dispatches progress callbacks. 
@@ -32,7 +32,6 @@ Crucially, the Driver delegates all **Category 1 (Transient)** transport retries
 The Driver exposes:
 *   `Driver#resume_handle`: Returns a `ResumeHandle` (or `nil` if initiation has not established an upload URL, or if the session is `:rejected`, `:cancelled`, or `:success`; completed uploads are not resumable). Reading this property mid-run provides a best-effort snapshot of current session parameters.
 *   `Driver#upload_url`: Returns the raw protocol state upload URL under any status (`:active`, `:success`, `:rejected`, `:cancelled`).
-*   `Driver#stream_position`: Returns the current absolute stream offset (`@buffer_start_offset + @buffer.bytesize`).
 
 ### 1.2 Core (State Container)
 The `Core` maintains the immutable `State` snapshot. When `Core#dispatch(event)` is invoked by the Driver, Core forwards `@state`, the event, and static configuration to `Rules.decide`. Core mutates `@state` to `decision.next_state`, records the decision in `@last_decision`, and returns `decision.instructions` back to the Driver. Core contains zero protocol branching logic and zero side effects.
@@ -44,30 +43,43 @@ The `Rules` module encapsulates the Resumable Upload Protocol state transitions 
 Because arbitrary Ruby `IO` objects (network sockets, pipes, `STDIN`) do not support seeking (`#seek`), the Driver buffers the current in-flight chunk in memory (bounded by chunk size, default: 8MB). When `RetryPolicy` executes transport retries, or when `Core` triggers Category 2 recovery realignments within the buffered range, the Driver retransmits directly from memory. The buffer is discarded only after receiving a `200 OK` durably confirming receipt of the chunk.
 
 ### 1.5 Session (Transfer Coordinator)
-The `Session` (`Gapic::Rest::ResumableUpload::Session`) provides a client-facing coordinator that encapsulates configuration, owns the input stream, and manages upload execution across successive runs.
+The `Session` (`Gapic::Rest::ResumableUpload::Session`) provides a client-facing coordinator that encapsulates configuration, owns the input stream, and manages upload execution across a strict single-run lifecycle.
 
-#### Observable States
+#### Single-Run Contract & Two-State Model
+A session adheres to a two-state model with a strict single-run contract: a session performs exactly one run (`start` or `resume`), never both, never twice.
+
 1.  **Unbound (`!session.bound?`)**:
-    *   Initial state upon construction. The session does not yet know its upload.
-    *   Permitted operations: `start` and explicit `resume` (with `upload_url:` + `chunk_size:` or `resume_handle:`).
-    *   Bare `resume` raises `SessionStateError`.
-2.  **Bound and Alive (`session.bound? && session.resumable?`)**:
-    *   An upload URL is known and `resume_handle` is non-nil (the session is actively in-flight or paused after a recoverable error).
-    *   Permitted operations: bare `resume` and explicit `resume` with matching `upload_url`.
-    *   `start` raises `SessionStateError` (a bound session never re-binds).
-3.  **Bound Dead (`session.bound? && !session.resumable?`)**:
-    *   Finalized state (completed `200 OK`, rejected `4xx`, or cancelled).
-    *   Completed uploads are not resumable: once a transfer succeeds, `resume_handle` returns `nil` and `resumable?` returns `false`.
-    *   The session is permanently unusable for further uploads.
-    *   Both `start` and `resume` raise `SessionStateError`. An end user wishing to upload must create a new session.
+    *   Initial state upon construction (`Session.new`). The session has not yet executed a run.
+    *   Permitted operations: `start` or `resume(...)`.
+2.  **Bound (`session.bound?`)**:
+    *   Transitions to bound as soon as `start` or `resume` begins execution.
+    *   The session has executed its run and cannot be reused.
+    *   Both `start` and `resume` raise `SessionStateError` ("Session has already executed a run").
+
+#### Resumability (`session.resumable?`)
+*   Reports whether a *new* session can resume the transfer (`!session.resume_handle.nil?`).
+*   Completed uploads are not resumable: once a transfer succeeds, `resume_handle` returns `nil` and `resumable?` returns `false`.
+*   When a run fails with a recoverable error, `resume_handle` captures the upload parameters (`upload_url`, `chunk_size`) and `resumable?` returns `true`.
+
+#### Precondition on Stream Position for Resume
+*   Before executing `resume`, the caller must ensure the input stream is positioned at byte 0.
+*   If `stream.respond_to?(:pos) && !stream.pos.zero?`, `Session#resume` raises `ArgumentError` ("Input stream must be at byte 0 to resume; rewind the stream before resuming").
+*   For unseekable streams without `:pos` (or streams at `pos == 0`), `Session` trusts the stream is at byte 0 and delegates to `Driver`, which fast-forwards to the server-confirmed offset by seeking or reading and discarding bytes.
 
 #### Resume Invocations & Forms
-The `Session#resume` method accepts strictly keyword-only arguments (`upload_url: nil, chunk_size: nil, resume_handle: nil, stream_offset: nil`):
-1.  **Bare Resume (`session.resume(stream_offset: nil)`)**: Continues the bound upload. Derives `stream_offset`:
-    *   If `stream.respond_to?(:seek)`: `0` (realign/rewind seeks the stream to match the server offset).
-    *   Otherwise: `@last_driver.stream_position` (the byte offset to which the physical unseekable stream was advanced in the prior run).
-2.  **Explicit URL & Chunk Size (`session.resume(upload_url:, chunk_size:, stream_offset: nil)`)**: Binds and resumes with explicit upload URL and chunk size.
-3.  **Resume Handle (`session.resume(resume_handle:, stream_offset: nil)`)**: Binds and resumes using an existing `ResumeHandle`.
+The `Session#resume` method accepts strictly keyword-only arguments: `upload_url: nil, chunk_size: nil, resume_handle: nil`.
+Resumption always requires an unbound session with one of two mutually exclusive parameter forms:
+1.  **Explicit URL & Chunk Size**: `session.resume(upload_url: url, chunk_size: size)`
+2.  **Resume Handle**: `session.resume(resume_handle: handle)`
+
+Calling `resume` without arguments (bare resume), calling `resume` with `upload_url` but omitting `chunk_size`, or mixing `resume_handle` with other parameters raises `ArgumentError`.
+
+#### Cross-Session Resumption Flow
+Because a session performs only a single run, resuming an interrupted upload requires instantiating a fresh session:
+1. Session 1 encounters a recoverable error.
+2. Caller extracts `resume_handle = session1.resume_handle` (or from the error's `#resume_handle`).
+3. Caller rewinds the stream to byte 0 (if seekable, or provides an equivalent stream starting at byte 0).
+4. Caller instantiates Session 2 and invokes `session2.resume(resume_handle: resume_handle)`.
 
 #### Concurrency & Execution Model
 *   At most one run (`Driver#run`) may execute at any time.
@@ -128,7 +140,6 @@ module Gapic
         :upload_url,                       # [String] Upload session URL returned by Scotty backend
         :chunk_size,                       # [Integer] Chunk size in bytes (> 0)
         :stream,                           # [IO] Binary input stream to upload
-        :stream_offset,                    # [Integer] Starting byte offset in stream (default: 0)
         :upload_size,                      # [Integer, nil] Total upload bytes if known upfront
         :content_type,                     # [String, nil] MIME type of uploaded media
         :timeout,                          # [Numeric, nil] Total upload timeout in seconds (zero/negative treated as nil)
@@ -246,7 +257,7 @@ When `Core` resolves a recovery query or offset realignment, the Driver executes
     *   Driver resets `@buffer = "".b`.
     *   Driver advances the stream to `server_offset`:
         *   If seekable: `stream.seek(server_offset)`.
-        *   If unseekable: Driver reads and discards `server_offset - current_stream_pos` bytes from `stream`. If the stream encounters an unexpected EOF before reaching `server_offset`, Driver raises a terminal `StreamMismatchError` with `resume_handle`.
+        *   If unseekable: Driver reads and discards bytes from `stream` until reaching `server_offset` (reading `server_offset - buffer_end` bytes). If the stream encounters an unexpected EOF before reaching `server_offset`, Driver raises a terminal `StreamMismatchError` with `resume_handle`.
     *   Driver sets `buffer_start_offset = server_offset`.
 
 ---

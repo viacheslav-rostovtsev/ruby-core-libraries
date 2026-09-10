@@ -124,12 +124,11 @@ class DriverTest < Minitest::Test
     ]
     stub = FakeClientStub.new responses
     config = ResumeUploadConfig.new(
-      upload_url:    "https://example.com/session/1",
-      chunk_size:    4,
-      stream:        StringIO.new("0123456789"),
-      stream_offset: 0,
-      upload_size:   10,
-      on_progress:   ->(p) { progress_records << p }
+      upload_url:  "https://example.com/session/1",
+      chunk_size:  4,
+      stream:      StringIO.new("0123456789"),
+      upload_size: 10,
+      on_progress: ->(p) { progress_records << p }
     )
 
     driver = Driver.new client_stub: stub, config: config
@@ -171,12 +170,11 @@ class DriverTest < Minitest::Test
     ]
     stub = FakeClientStub.new responses
     config = ResumeUploadConfig.new(
-      upload_url:    "https://example.com/session/1",
-      chunk_size:    4,
-      stream:        StringIO.new("0123456789"),
-      stream_offset: 0,
-      upload_size:   10,
-      on_progress:   ->(p) { progress_records << p }
+      upload_url:  "https://example.com/session/1",
+      chunk_size:  4,
+      stream:      StringIO.new("0123456789"),
+      upload_size: 10,
+      on_progress: ->(p) { progress_records << p }
     )
 
     driver = Driver.new client_stub: stub, config: config

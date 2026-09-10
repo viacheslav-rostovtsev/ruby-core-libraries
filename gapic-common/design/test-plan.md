@@ -182,9 +182,6 @@ flowchart TD
   * *Fast-forward unexpected EOF*: Unexpected EOF while discarding bytes from an unseekable stream raises `StreamMismatchError` with `resume_handle` and the uniform resumable suffix.
   * *Server offset exceeding upload size*: Server reporting an offset exceeding known `upload_size` raises `StreamMismatchError` with `resume_handle` and the uniform resumable suffix.
   * *Server offset exceeding stream size on seekable stream with unknown upload size*: When `upload_size` is `nil` and the seekable stream responds to `:size`, server offset exceeding `stream.size` raises `StreamMismatchError` with `resume_handle` and the uniform resumable suffix (guarding against Ruby's seek beyond EOF).
-* **Driver Stream Position & Resume Offset**:
-  * `Driver#stream_position`: Returns `@buffer_start_offset + @buffer.bytesize`.
-  * `ResumeUploadConfig#stream_offset`: Initializes `Driver#instance_variable_get(:@buffer_start_offset)` and `Driver#stream_position`.
 * **Driver Session Snapshot (`Driver#resume_handle`)**:
   * Returns `nil` before upload session URL is established.
   * Returns `ResumeHandle` snapshot during active upload progression.
@@ -322,31 +319,34 @@ flowchart TD
 ### 3.13 Resumable Upload Session (`session_test.rb`)
 
 * **Initialization & argument validation (`test_initialize_mandatory_arguments`, `test_initialize_defaults`)**:
-  * Asserts missing any mandatory keyword (`client_stub`, `stream`, `initial_url`, `initial_body`) raises `ArgumentError`.
-  * Verifies defaults (`initial_headers: {}`, optional configs defaulting to `nil`, `upload_size:` explicit).
-* **Observable states & lifecycle**:
-  * *Unbound (`test_initial_unbound_state`, `test_bare_resume_on_unbound_session_raises_session_state_error`)*:
+  * Asserts missing any mandatory keyword (`client_stub`, `stream`, `initial_url`) raises `ArgumentError`.
+  * Verifies defaults (`initial_body: nil`, `initial_headers: {}`, optional configs defaulting to `nil`, `upload_size:` explicit).
+* **Observable states & lifecycle (Two-State Model)**:
+  * *Unbound (`test_initial_unbound_state`)*:
     * Verifies `bound?`, `resumable?`, and `running?` return `false`, and `upload_url` / `resume_handle` return `nil`.
-    * Asserts bare `session.resume` on an unbound session raises `SessionStateError`.
-  * *Bound and Alive (`test_resume_form1_bare_resume_on_bound_alive_session`, `test_resume_form1_bare_resume_without_arguments_when_seekable`)*:
-    * Verifies that when a run fails with a recoverable error, `bound?` and `resumable?` are `true`, and `resume_handle` is present.
-    * Verifies bare `session.resume` without arguments successfully continues the bound upload on a seekable stream.
-  * *Bound and Alive on unseekable streams (`test_resume_form1_bare_resume_on_unseekable_stream_derives_offset`)*:
-    * Verifies bare `session.resume` on an unseekable stream derives `stream_offset` from the prior run's `@last_driver.stream_position` and passes it to `ResumeUploadConfig`.
-  * *Bound Dead (`test_start_successful_upload_transitions_to_bound_dead`, `test_resume_on_bound_dead_session_raises_session_state_error`)*:
+  * *Single-run contract on start (`test_start_transitions_to_bound`, `test_start_when_already_bound_raises_session_state_error`, `test_resume_when_already_bound_after_start_raises_session_state_error`)*:
+    * Verifies calling `session.start` transitions session to `bound? == true`.
+    * Asserts calling `session.start` or `session.resume` again on an already bound session raises `SessionStateError` ("Session has already executed a run").
+  * *Single-run contract on resume (`test_resume_transitions_to_bound`, `test_resume_when_already_bound_after_resume_raises_session_state_error`, `test_start_when_already_bound_after_resume_raises_session_state_error`)*:
+    * Verifies calling `session.resume` transitions session to `bound? == true`.
+    * Asserts subsequent calls to `resume` or `start` raise `SessionStateError` ("Session has already executed a run").
+  * *Resumability & terminal states (`test_start_successful_upload_transitions_to_bound_not_resumable`, `test_failed_upload_remains_resumable`)*:
     * Verifies completed uploads are not resumable: after upload success, `bound?` is `true`, `resumable?` is `false`, and `resume_handle` is `nil`.
-    * Asserts resuming a finalized dead session raises `SessionStateError` ("Session is dead and cannot be resumed").
-  * *Start lifecycle violation (`test_start_when_already_bound_raises_session_state_error`)*:
-    * Asserts calling `session.start` on an already bound session raises `SessionStateError` ("Session is already bound to an upload").
-* **Resume mutually exclusive forms & argument shape**:
-  * *Form 2 (`test_resume_form2_explicit_url_and_chunk_size_binds_unbound_session`)*:
-    * Verifies `session.resume(upload_url:, chunk_size:)` immediately binds and executes.
-  * *Form 3 (`test_resume_form3_resume_handle_binds_unbound_session`)*:
-    * Verifies `session.resume(resume_handle: handle)` immediately binds and executes.
-  * *Argument shape mixing (`test_resume_mixing_arguments_raises_argument_error`)*:
-    * Verifies mixing `resume_handle` with `upload_url` or `chunk_size`, passing positional arguments, or passing `upload_url` without `chunk_size` raises `ArgumentError`.
-  * *Re-binding violation (`test_resume_rebinding_different_upload_url_raises_session_state_error`)*:
-    * Verifies calling `resume` with a different `upload_url` than the bound session raises `SessionStateError`.
+    * Verifies that when a run fails with a recoverable error, `bound?` is `true`, `resumable?` is `true`, and `resume_handle` is present.
+* **Resume precondition & argument shape**:
+  * *Stream byte-0 precondition (`test_resume_with_non_zero_stream_pos_raises_argument_error`, `test_resume_with_zero_stream_pos_succeeds`, `test_resume_with_unseekable_stream_trusts_caller`)*:
+    * Asserts calling `resume` when `stream.pos != 0` raises `ArgumentError` ("Input stream must be at byte 0 to resume; rewind the stream before resuming").
+    * Verifies calling `resume` when `stream.pos == 0` or on unseekable streams without `:pos` succeeds.
+  * *Bare resume rejection (`test_bare_resume_raises_argument_error`)*:
+    * Asserts calling `session.resume` with no arguments raises `ArgumentError`.
+  * *Resume mutually exclusive forms (`test_resume_with_upload_url_and_chunk_size`, `test_resume_with_resume_handle`)*:
+    * Verifies `session.resume(upload_url:, chunk_size:)` and `session.resume(resume_handle:)` execute successfully.
+  * *Argument mixing & validation (`test_resume_mixing_arguments_raises_argument_error`, `test_resume_missing_chunk_size_with_upload_url_raises_argument_error`)*:
+    * Asserts mixing `resume_handle` with `upload_url` or `chunk_size`, or passing `upload_url` without `chunk_size`, raises `ArgumentError`.
+* **Cross-session resumption (`test_cross_session_resumption_flow`)*:
+  * Simulates Session 1 failing with a recoverable error and capturing `resume_handle`.
+  * Rewinds stream to 0, creates Session 2, and invokes `session2.resume(resume_handle: handle)`.
+  * Verifies Session 2 successfully resumes and completes the upload.
 * **Concurrency & running guard (`test_running_guard_prevents_concurrent_runs`)**:
   * Blocks `client_stub.make_post_request` via synchronizing `Queue`s during `session.start`.
   * Asserts `session.running?` is `true` while execution is blocked.

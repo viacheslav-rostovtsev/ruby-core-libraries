@@ -122,8 +122,6 @@ module Gapic
       #   @return [Integer] Explicit chunk size in bytes (must be a positive integer)
       # @!attribute [r] stream
       #   @return [IO] Binary input stream to upload
-      # @!attribute [r] stream_offset
-      #   @return [Integer] Absolute byte offset at which the stream is currently positioned (defaults to 0)
       # @!attribute [r] upload_size
       #   @return [Integer, nil] Total upload bytes if known upfront
       # @!attribute [r] content_type
@@ -149,7 +147,6 @@ module Gapic
         :upload_url,
         :chunk_size,
         :stream,
-        :stream_offset,
         :upload_size,
         :content_type,
         :timeout,
@@ -164,7 +161,6 @@ module Gapic
         # @param upload_url [String] Session upload URL
         # @param chunk_size [Integer] Explicit chunk size in bytes (must be a positive integer)
         # @param stream [IO] Binary input stream to upload
-        # @param stream_offset [Integer] Current absolute byte offset of the stream (defaults to 0)
         # @param upload_size [Integer, nil] Total upload bytes if known upfront
         # @param content_type [String, nil] MIME type of uploaded media
         # @param timeout [Numeric, nil] Total upload timeout in seconds (zero/negative values treated as nil)
@@ -177,7 +173,6 @@ module Gapic
         def initialize upload_url:,
                        chunk_size:,
                        stream:,
-                       stream_offset: 0,
                        upload_size: nil,
                        content_type: nil,
                        timeout: nil,
@@ -190,15 +185,11 @@ module Gapic
             raise ArgumentError, "chunk_size must be a positive integer"
           end
           raise ArgumentError, "stream is required" if stream.nil?
-          if !stream_offset.is_a?(Integer) || stream_offset.negative?
-            raise ArgumentError, "stream_offset must be a non-negative integer"
-          end
 
           super(
             upload_url:                 upload_url,
             chunk_size:                 chunk_size,
             stream:                     stream,
-            stream_offset:              stream_offset,
             upload_size:                upload_size,
             content_type:               content_type,
             timeout:                    timeout,

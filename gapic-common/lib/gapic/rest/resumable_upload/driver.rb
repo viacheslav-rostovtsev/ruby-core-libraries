@@ -77,14 +77,6 @@ module Gapic
         end
 
         ##
-        # Returns the current absolute stream position represented by the Driver buffer window.
-        #
-        # @return [Integer] Current absolute byte offset
-        def stream_position
-          @buffer_start_offset + @buffer.bytesize
-        end
-
-        ##
         # Initializes a new Resumable Upload Driver.
         #
         # @param client_stub [Gapic::Rest::ClientStub] Underlying REST client stub
@@ -96,7 +88,7 @@ module Gapic
           @config = config
           @core = core || Core.new(config)
           @buffer = "".b
-          @buffer_start_offset = config.respond_to?(:stream_offset) && config.stream_offset ? config.stream_offset : 0
+          @buffer_start_offset = 0
 
           endpoint = client_stub.respond_to?(:endpoint) ? client_stub.endpoint : nil
           setup_logging logger: logger || (client_stub.respond_to?(:logger) ? client_stub.logger : nil),
