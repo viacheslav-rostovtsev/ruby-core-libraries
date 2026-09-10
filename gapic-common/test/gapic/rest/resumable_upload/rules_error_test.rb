@@ -305,6 +305,7 @@ class RulesErrorTest < Minitest::Test
     assert_nil Rules.resume_handle_from(State.new(status: :starting, upload_url: nil))
     assert_nil Rules.resume_handle_from(State.new(status: :rejected, upload_url: "https://upload.example.com/id123"))
     assert_nil Rules.resume_handle_from(State.new(status: :cancelled, upload_url: "https://upload.example.com/id123"))
+    assert_nil Rules.resume_handle_from(State.new(status: :success, upload_url: "https://upload.example.com/id123"))
 
     state = State.new status: :transmission_sending, upload_url: "https://upload.example.com/id123", chunk_size: 1024
     handle = Rules.resume_handle_from state

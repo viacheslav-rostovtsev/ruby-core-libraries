@@ -67,6 +67,14 @@ module Gapic
         end
 
         ##
+        # Returns the raw upload session URL from protocol state, regardless of lifecycle status.
+        #
+        # @return [String, nil] Session upload URL if established, or nil
+        def upload_url
+          @core.state.upload_url
+        end
+
+        ##
         # Returns the current absolute stream position represented by the Driver buffer window.
         #
         # @return [Integer] Current absolute byte offset

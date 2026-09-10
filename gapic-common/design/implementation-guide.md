@@ -17,12 +17,22 @@ graph TD
     Driver -->|IO#read| Stream[Local Stream]
 ```
 
+### 1.0 Domain Vocabulary
+*   **Upload**: Server-side entity created by a successful session initiation (`start`), identified by `upload_url`.
+*   **Resume Handle (`ResumeHandle`)**: An immutable snapshot (`upload_url`, `chunk_size`) identifying an upload for resumption.
+*   **Session (`Session`)**: Client-side transfer coordinator; exactly 1 per logical transfer. It owns the input stream and configuration options, executing runs against exactly one upload.
+*   **Run**: One invocation of `Driver#run` (either a start or resume execution).
+*   **Bound**: The property that a session knows its upload (`!session.upload_url.nil?`). Set by `start`, or immediately by `resume`. A bound session never re-binds.
+
 ### 1.1 Driver (Synchronous I/O Adapter)
 The `Driver` executes all operations with side-effects. It interacts with HTTP transport via `Gapic::Rest::ClientStub`, reads binary data from local input streams, tracks monotonic execution deadlines, and dispatches progress callbacks. 
 
 Crucially, the Driver delegates all **Category 1 (Transient)** transport retries directly to `Gapic::Common::RetryPolicy`. Transient retries occur entirely within the Driver's network execution wrapper. The `Core` state machine is never exposed to transient noise, receiving only verified successful HTTP responses or terminal transport exceptions.
 
-The Driver also exposes `Driver#resume_handle`, returning a `ResumeHandle` (or `nil` if initiation has not established an upload URL). Reading this property mid-run provides a best-effort snapshot of current session parameters. In addition, `Driver#stream_position` returns the current absolute stream offset (`@buffer_start_offset + @buffer.bytesize`).
+The Driver exposes:
+*   `Driver#resume_handle`: Returns a `ResumeHandle` (or `nil` if initiation has not established an upload URL, or if the session is `:rejected`, `:cancelled`, or `:success`). Reading this property mid-run provides a best-effort snapshot of current session parameters.
+*   `Driver#upload_url`: Returns the raw protocol state upload URL under any status (`:active`, `:success`, `:rejected`, `:cancelled`).
+*   `Driver#stream_position`: Returns the current absolute stream offset (`@buffer_start_offset + @buffer.bytesize`).
 
 ### 1.2 Core (State Container)
 The `Core` maintains the immutable `State` snapshot. When `Core#dispatch(event)` is invoked by the Driver, Core forwards `@state`, the event, and static configuration to `Rules.decide`. Core mutates `@state` to `decision.next_state`, records the decision in `@last_decision`, and returns `decision.instructions` back to the Driver. Core contains zero protocol branching logic and zero side effects.
@@ -32,6 +42,30 @@ The `Rules` module encapsulates the Resumable Upload Protocol state transitions 
 
 ### 1.4 Stream Buffering
 Because arbitrary Ruby `IO` objects (network sockets, pipes, `STDIN`) do not support seeking (`#seek`), the Driver buffers the current in-flight chunk in memory (bounded by chunk size, default: 8MB). When `RetryPolicy` executes transport retries, or when `Core` triggers Category 2 recovery realignments within the buffered range, the Driver retransmits directly from memory. The buffer is discarded only after receiving a `200 OK` durably confirming receipt of the chunk.
+
+### 1.5 Session (Transfer Coordinator)
+The `Session` (`Gapic::Rest::ResumableUpload::Session`) provides a client-facing coordinator that encapsulates configuration, owns the input stream, and manages upload execution across successive runs.
+
+#### Observable States
+1.  **Unbound (`!session.bound?`)**:
+    *   Initial state upon construction. The session does not yet know its upload.
+    *   Permitted operations: `start` and explicit `resume` (with `upload_url:` + `chunk_size:` or `resume_handle:`).
+    *   Bare `resume` raises `SessionStateError`.
+2.  **Bound and Alive (`session.bound? && session.resumable?`)**:
+    *   An upload URL is known and `resume_handle` is non-nil (the session is actively in-flight or paused after a recoverable error).
+    *   Permitted operations: bare `resume` and explicit `resume` with matching `upload_url`.
+    *   `start` raises `SessionStateError` (a bound session never re-binds).
+3.  **Bound Dead (`session.bound? && !session.resumable?`)**:
+    *   Finalized state (completed `200 OK`, rejected `4xx`, or cancelled).
+    *   The session is permanently unusable for further uploads.
+    *   Both `start` and `resume` raise `SessionStateError`. An end user wishing to upload must create a new session.
+
+#### Concurrency & Execution Model
+*   At most one run (`Driver#run`) may execute at any time.
+*   `@running` is checked and toggled exclusively inside a `Mutex`.
+*   Network execution (`driver.run`) occurs outside the mutex to prevent blocking reader threads.
+*   Invoking `start` or `resume` while `@running` is `true` raises `SessionStateError`.
+*   Errors propagate unchanged. The failed `Driver` remains referenced so `upload_url`, `resume_handle`, and `bound?` remain inspectable after an exception.
 
 ---
 
@@ -453,6 +487,7 @@ Terminal errors provide actionable context so downstream SDK callers can inspect
     *   `InvalidTransitionError < Gapic::Common::Error`: Unexpected event dispatched for state; includes `HasResumeHandle`.
     *   `StreamMismatchError < Gapic::Common::Error`: Stream content or length does not match resumed upload specifications; includes `HasResumeHandle`.
     *   `RequestFailedError < Gapic::Common::Error`: Terminal HTTP request failure (e.g. transport connection failure, request timeout, or retries exhausted). Retains `attr_reader :cause` returning the underlying error, preserves REST error attributes (`status_code`, `status`, `details`, `headers`) when available, and includes `HasResumeHandle`.
+    *   `SessionStateError < Gapic::Common::Error`: Raised when an operation violates Session lifecycle rules (e.g. attempting to start an already-bound session, resuming an unbound session without a target upload, re-binding to a different upload, resuming a finalized/dead session, or concurrent run invocations). Distinguished from `ArgumentError`, which is raised strictly for invalid argument shapes.
 *   **Resume Handle Propagation (`HasResumeHandle`)**:
     *   The `HasResumeHandle` mixin exposes `attr_reader :resume_handle` returning a `ResumeHandle` (or `nil` if session initiation was incomplete or if the session was `:rejected` or `:cancelled`).
     *   Whenever `resume_handle` is non-nil, the uniform suffix `" (upload session is resumable: see #resume_handle)"` is automatically appended to the error message.

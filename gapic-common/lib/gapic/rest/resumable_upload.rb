@@ -24,6 +24,7 @@ require "gapic/rest/resumable_upload/driver/upload_log"
 require "gapic/rest/resumable_upload/rules"
 require "gapic/rest/resumable_upload/core"
 require "gapic/rest/resumable_upload/driver"
+require "gapic/rest/resumable_upload/session"
 
 module Gapic
   module Rest

@@ -523,6 +523,14 @@ module Gapic
           end
         end
       end
+
+      ##
+      # Raised when an operation violates the Session lifecycle rules (e.g. attempting to
+      # start an already-bound session, resuming an unbound session without a target upload,
+      # re-binding to a different upload, or concurrent run invocations).
+      #
+      class SessionStateError < Gapic::Common::Error
+      end
     end
   end
 end

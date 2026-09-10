@@ -316,3 +316,39 @@ flowchart TD
   * Asserts the sentinel string is completely absent across the entire serialized log corpus.
 * **Bounded log corpus size (`test_full_log_corpus_size_under_64kib`)**:
   * Asserts that the total serialized byte size of all log entries emitted across a 16 MiB multi-chunk upload run is strictly under 64 KiB (65,536 bytes).
+
+---
+
+### 3.13 Resumable Upload Session (`session_test.rb`)
+
+* **Initialization & argument validation (`test_initialize_mandatory_arguments`, `test_initialize_defaults_and_size_alias`)**:
+  * Asserts missing any mandatory keyword (`client_stub`, `stream`, `initial_url`, `initial_body`) raises `ArgumentError`.
+  * Verifies defaults (`initial_headers: {}`, optional configs defaulting to `nil`) and confirms `size:` aliases `upload_size:`.
+* **Observable states & lifecycle**:
+  * *Unbound (`test_initial_unbound_state`, `test_bare_resume_on_unbound_session_raises_session_state_error`)*:
+    * Verifies `bound?`, `resumable?`, `is_dead?`, and `running?` return `false`, and `upload_url` / `resume_handle` return `nil`.
+    * Asserts bare `session.resume` on an unbound session raises `SessionStateError`.
+  * *Bound and Alive (`test_resume_form1_bare_resume_on_bound_alive_session`, `test_resume_form1_bare_resume_without_arguments_when_stream_rewound`)*:
+    * Verifies that when a run fails with a recoverable error, `bound?` and `resumable?` are `true`, `is_dead?` is `false`, and `resume_handle` is present.
+    * Verifies bare `session.resume` successfully continues the bound upload.
+  * *Bound Dead (`test_start_successful_upload_transitions_to_bound_dead`, `test_resume_on_bound_dead_session_raises_session_state_error`)*:
+    * Verifies that after upload finalization (success, rejection, or cancel), `bound?` is `true`, `resumable?` is `false`, and `is_dead?` is `true`.
+    * Asserts resuming a dead session raises `SessionStateError` ("Session is dead and cannot be resumed").
+  * *Start lifecycle violation (`test_start_when_already_bound_raises_session_state_error`)*:
+    * Asserts calling `session.start` on an already bound session raises `SessionStateError` ("Session is already bound to an upload").
+* **Resume mutually exclusive forms & argument shape**:
+  * *Form 2 (`test_resume_form2_explicit_url_and_chunk_size_binds_unbound_session`)*:
+    * Verifies `session.resume(upload_url:, chunk_size:)` immediately binds and executes.
+  * *Form 3 (`test_resume_form3_resume_handle_binds_unbound_session`)*:
+    * Verifies `session.resume(resume_handle)` immediately binds and executes.
+  * *Argument shape mixing (`test_resume_mixing_arguments_raises_argument_error`)*:
+    * Verifies mixing `resume_handle` with `upload_url` or `chunk_size`, or passing `upload_url` without `chunk_size`, raises `ArgumentError`.
+  * *Re-binding violation (`test_resume_rebinding_different_upload_url_raises_session_state_error`)*:
+    * Verifies calling `resume` with a different `upload_url` than the bound session raises `SessionStateError`.
+* **Concurrency & running guard (`test_running_guard_prevents_concurrent_runs`)**:
+  * Blocks `client_stub.make_post_request` via synchronizing `Queue`s during `session.start`.
+  * Asserts `session.running?` is `true` while execution is blocked.
+  * Asserts concurrent invocations of `session.resume` and `session.start` from another thread raise `SessionStateError` ("A run is already in progress for this session").
+  * Unblocks the worker thread, confirms run completes, and asserts `session.running?` transitions to `false`.
+* **Driver `#upload_url` verification (`test_driver_upload_url_across_statuses`)**:
+  * Confirms `Driver#upload_url` returns the raw state upload URL across `:active`, `:success`, `:rejected`, and `:cancelled` states (while `Driver#resume_handle` correctly returns `nil` for `:rejected`, `:cancelled`, and `:success`).

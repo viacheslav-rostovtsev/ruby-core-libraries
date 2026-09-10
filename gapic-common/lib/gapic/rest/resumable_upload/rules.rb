@@ -575,7 +575,7 @@ module Gapic
         # @param state [State] Protocol state
         # @return [ResumeHandle, nil] Resume handle if upload URL is established, or nil
         def self.resume_handle_from state
-          return nil if state.nil? || state.upload_url.nil? || [:rejected, :cancelled].include?(state.status)
+          return nil if state.nil? || state.upload_url.nil? || [:rejected, :cancelled, :success].include?(state.status)
 
           ResumeHandle.new upload_url: state.upload_url, chunk_size: state.chunk_size
         end
