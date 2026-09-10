@@ -67,9 +67,11 @@ class RulesErrorTest < Minitest::Test
     next_state, instructions = Rules.step state, failed, @config
 
     assert_equal :error, next_state.status
-    assert_equal err, next_state.last_error
+    assert_instance_of RequestFailedError, next_state.last_error
+    assert_equal err, next_state.last_error.cause
     assert_equal 1, instructions.size
     assert_instance_of Instruction::TerminateFailure, instructions.first
+    assert_equal next_state.last_error, instructions.first.error
   end
 
   def test_transition_starting_timeout_terminates_failure
@@ -80,10 +82,11 @@ class RulesErrorTest < Minitest::Test
 
     assert_equal :error, next_state.status
     assert_equal 0, next_state.in_flight_length
-    assert_equal err, next_state.last_error
+    assert_instance_of RequestFailedError, next_state.last_error
+    assert_equal err, next_state.last_error.cause
     assert_equal 1, instructions.size
     assert_instance_of Instruction::TerminateFailure, instructions.first
-    assert_equal err, instructions.first.error
+    assert_equal next_state.last_error, instructions.first.error
   end
 
   def test_transition_transmission_sending_retries_exhausted_terminates_failure
@@ -95,10 +98,11 @@ class RulesErrorTest < Minitest::Test
 
     assert_equal :error, next_state.status
     assert_equal 0, next_state.in_flight_length
-    assert_equal err, next_state.last_error
+    assert_instance_of RequestFailedError, next_state.last_error
+    assert_equal err, next_state.last_error.cause
     assert_equal 1, instructions.size
     assert_instance_of Instruction::TerminateFailure, instructions.first
-    assert_equal err, instructions.first.error
+    assert_equal next_state.last_error, instructions.first.error
   end
 
   def test_transition_recovery_timeout_terminates_failure
@@ -109,10 +113,11 @@ class RulesErrorTest < Minitest::Test
 
     assert_equal :error, next_state.status
     assert_equal 0, next_state.in_flight_length
-    assert_equal err, next_state.last_error
+    assert_instance_of RequestFailedError, next_state.last_error
+    assert_equal err, next_state.last_error.cause
     assert_equal 1, instructions.size
     assert_instance_of Instruction::TerminateFailure, instructions.first
-    assert_equal err, instructions.first.error
+    assert_equal next_state.last_error, instructions.first.error
   end
 
   def test_transition_global_deadline_exceeded
@@ -284,11 +289,13 @@ class RulesErrorTest < Minitest::Test
     assert_operator BadResponseError, :<, Gapic::Rest::Error
 
     assert_operator StreamMismatchError, :<, Gapic::Common::Error
+    assert_operator RequestFailedError, :<, Gapic::Common::Error
     assert_operator HasResumeHandle, :===, BadResponseError.new
     assert_operator HasResumeHandle, :===, DeadlineExceededError.new
     assert_operator HasResumeHandle, :===, UnseekableStreamError.new
     assert_operator HasResumeHandle, :===, InvalidTransitionError.new("invalid")
     assert_operator HasResumeHandle, :===, StreamMismatchError.new
+    assert_operator HasResumeHandle, :===, RequestFailedError.new("failed")
     refute_operator HasResumeHandle, :===, UploadRejectedError.new
     refute_operator HasResumeHandle, :===, UploadCancelledError.new
   end
@@ -296,6 +303,8 @@ class RulesErrorTest < Minitest::Test
   def test_rules_resume_handle_from
     assert_nil Rules.resume_handle_from(nil)
     assert_nil Rules.resume_handle_from(State.new(status: :starting, upload_url: nil))
+    assert_nil Rules.resume_handle_from(State.new(status: :rejected, upload_url: "https://upload.example.com/id123"))
+    assert_nil Rules.resume_handle_from(State.new(status: :cancelled, upload_url: "https://upload.example.com/id123"))
 
     state = State.new status: :transmission_sending, upload_url: "https://upload.example.com/id123", chunk_size: 1024
     handle = Rules.resume_handle_from state
@@ -319,7 +328,7 @@ class RulesErrorTest < Minitest::Test
     refute_nil deadline_err.resume_handle
     assert_equal "https://upload.example.com/session_abc", deadline_err.resume_handle.upload_url
     assert_equal 512, deadline_err.resume_handle.chunk_size
-    assert_includes deadline_err.message, "(upload_session is resumable: see #resume_handle)"
+    assert_includes deadline_err.message, "(upload session is resumable: see #resume_handle)"
 
     # 2. Bad response
     resp = Event::HttpResponse.new status: 401, headers: {}, body: "Fatal 401"
@@ -330,7 +339,7 @@ class RulesErrorTest < Minitest::Test
     refute_nil bad_resp_err.resume_handle
     assert_equal "https://upload.example.com/session_abc", bad_resp_err.resume_handle.upload_url
     assert_equal 512, bad_resp_err.resume_handle.chunk_size
-    assert_includes bad_resp_err.message, "(upload_session is resumable: see #resume_handle)"
+    assert_includes bad_resp_err.message, "(upload session is resumable: see #resume_handle)"
 
     # 3. Unmatched transition
     unmatched_err = assert_raises InvalidTransitionError do
@@ -339,7 +348,23 @@ class RulesErrorTest < Minitest::Test
     refute_nil unmatched_err.resume_handle
     assert_equal "https://upload.example.com/session_abc", unmatched_err.resume_handle.upload_url
     assert_equal 512, unmatched_err.resume_handle.chunk_size
-    assert_includes unmatched_err.message, "(upload_session is resumable: see #resume_handle)"
+    assert_includes unmatched_err.message, "(upload session is resumable: see #resume_handle)"
+
+    # 4. Request failed (retries exhausted)
+    req_failed = Event::RequestFailed.new(
+      kind: :retries_exhausted,
+      message: "Connection reset",
+      source_error: StandardError.new("reset")
+    )
+    next_state, = Rules.step state, req_failed, @config
+    assert_equal :error, next_state.status
+    req_err = next_state.last_error
+    assert_instance_of RequestFailedError, req_err
+    refute_nil req_err.resume_handle
+    assert_equal "https://upload.example.com/session_abc", req_err.resume_handle.upload_url
+    assert_equal 512, req_err.resume_handle.chunk_size
+    assert_equal "reset", req_err.cause.message
+    assert_includes req_err.message, "(upload session is resumable: see #resume_handle)"
   end
 
   def test_resume_handle_nil_on_errors_before_session_created
@@ -350,7 +375,7 @@ class RulesErrorTest < Minitest::Test
     assert_equal :error, next_state.status
     deadline_err = next_state.last_error
     assert_nil deadline_err.resume_handle
-    refute_includes deadline_err.message, "(upload_session is resumable: see #resume_handle)"
+    refute_includes deadline_err.message, "(upload session is resumable: see #resume_handle)"
 
     # 2. Bad response before session creation
     resp = Event::HttpResponse.new status: 503, headers: {}, body: "Init failed"
@@ -358,14 +383,27 @@ class RulesErrorTest < Minitest::Test
     assert_equal :error, next_state.status
     bad_resp_err = next_state.last_error
     assert_nil bad_resp_err.resume_handle
-    refute_includes bad_resp_err.message, "(upload_session is resumable: see #resume_handle)"
+    refute_includes bad_resp_err.message, "(upload session is resumable: see #resume_handle)"
 
     # 3. Unmatched transition before session creation
     unmatched_err = assert_raises InvalidTransitionError do
       Rules.step state, Object.new, @config
     end
     assert_nil unmatched_err.resume_handle
-    refute_includes unmatched_err.message, "(upload_session is resumable: see #resume_handle)"
+    refute_includes unmatched_err.message, "(upload session is resumable: see #resume_handle)"
+
+    # 4. Request failed before session creation
+    req_failed = Event::RequestFailed.new(
+      kind: :connection_failed,
+      message: "Connection reset",
+      source_error: StandardError.new("reset")
+    )
+    next_state, = Rules.step state, req_failed, @config
+    assert_equal :error, next_state.status
+    req_err = next_state.last_error
+    assert_instance_of RequestFailedError, req_err
+    assert_nil req_err.resume_handle
+    refute_includes req_err.message, "(upload session is resumable: see #resume_handle)"
   end
 
   def test_resume_handle_absent_on_rejected_and_cancelled
@@ -383,7 +421,7 @@ class RulesErrorTest < Minitest::Test
     rejected_err = next_state.last_error
     assert_instance_of UploadRejectedError, rejected_err
     refute_respond_to rejected_err, :resume_handle
-    refute_includes rejected_err.message, "(upload_session is resumable: see #resume_handle)"
+    refute_includes rejected_err.message, "(upload session is resumable: see #resume_handle)"
 
     # 2. Cancelled error
     cancelling_state = state.with status: :cancelling
@@ -394,7 +432,7 @@ class RulesErrorTest < Minitest::Test
     cancelled_err = next_state.last_error
     assert_instance_of UploadCancelledError, cancelled_err
     refute_respond_to cancelled_err, :resume_handle
-    refute_includes cancelled_err.message, "(upload_session is resumable: see #resume_handle)"
+    refute_includes cancelled_err.message, "(upload session is resumable: see #resume_handle)"
   end
 
   def test_stream_mismatch_error_behavior
@@ -403,14 +441,33 @@ class RulesErrorTest < Minitest::Test
 
     assert_instance_of StreamMismatchError, err_with_handle
     assert_equal handle, err_with_handle.resume_handle
-    assert_equal "Stream too short (upload_session is resumable: see #resume_handle)", err_with_handle.message
+    assert_equal "Stream too short (upload session is resumable: see #resume_handle)", err_with_handle.message
 
     err_from = StreamMismatchError.from "Stream corrupted", resume_handle: handle
     assert_equal handle, err_from.resume_handle
-    assert_equal "Stream corrupted (upload_session is resumable: see #resume_handle)", err_from.message
+    assert_equal "Stream corrupted (upload session is resumable: see #resume_handle)", err_from.message
 
     err_without_handle = StreamMismatchError.new "No handle"
     assert_nil err_without_handle.resume_handle
     assert_equal "No handle", err_without_handle.message
+  end
+
+  def test_request_failed_error_behavior
+    handle = ResumeHandle.new upload_url: "https://upload.example.com/resume", chunk_size: 256
+    cause = Gapic::Rest::Error.new "Underlying Faraday error", 500, status: "INTERNAL", details: ["foo"], headers: { "k" => "v" }
+
+    err_with_handle = RequestFailedError.from cause, resume_handle: handle
+    assert_instance_of RequestFailedError, err_with_handle
+    assert_equal cause, err_with_handle.cause
+    assert_equal handle, err_with_handle.resume_handle
+    assert_equal 500, err_with_handle.status_code
+    assert_equal "INTERNAL", err_with_handle.status
+    assert_equal ["foo"], err_with_handle.details
+    assert_equal({ "k" => "v" }, err_with_handle.headers)
+    assert_equal "Underlying Faraday error (upload session is resumable: see #resume_handle)", err_with_handle.message
+
+    err_without_handle = RequestFailedError.from cause
+    assert_nil err_without_handle.resume_handle
+    assert_equal "Underlying Faraday error", err_without_handle.message
   end
 end

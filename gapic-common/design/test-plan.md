@@ -149,13 +149,13 @@ flowchart TD
 * **Actionable description for non-HTTP unexpected events**:
   * Stream chunk read while in `:starting` raises message stating `"initiating upload session: received unexpected stream chunk read (512 bytes, eof: false)"` with `err.response == nil`.
 * **Resume Handle & Error Metadata (`HasResumeHandle`)**:
-  * `HasResumeHandle` mixin inclusion verified on `BadResponseError`, `DeadlineExceededError`, `UnseekableStreamError`, `InvalidTransitionError`, and `StreamMismatchError`.
+  * `HasResumeHandle` mixin inclusion verified on `BadResponseError`, `DeadlineExceededError`, `UnseekableStreamError`, `InvalidTransitionError`, `StreamMismatchError`, and `RequestFailedError`.
   * `HasResumeHandle` explicitly refuted on terminal dead-session errors (`UploadRejectedError`, `UploadCancelledError`).
-  * `Rules.resume_handle_from`: Returns `nil` when state is `nil` or `upload_url` is `nil`; returns populated `ResumeHandle` with `upload_url` and `chunk_size` when established.
-  * Resumable error suffix: When `resume_handle` is present, uniform suffix `" (upload_session is resumable: see #resume_handle)"` is appended to the message on `DeadlineExceededError`, `BadResponseError`, `InvalidTransitionError`, `UnseekableStreamError`, and `StreamMismatchError`.
+  * `Rules.resume_handle_from`: Returns `nil` when state is `nil`, `upload_url` is `nil`, or status is `:rejected` or `:cancelled`; returns populated `ResumeHandle` with `upload_url` and `chunk_size` when established.
+  * Resumable error suffix: When `resume_handle` is present, uniform suffix `" (upload session is resumable: see #resume_handle)"` is appended to the message on `DeadlineExceededError`, `BadResponseError`, `InvalidTransitionError`, `UnseekableStreamError`, `StreamMismatchError`, and `RequestFailedError`.
   * Suffix omission: When `resume_handle` is `nil` (e.g. before session creation), error message omits the resumable suffix.
   * Terminal dead sessions: `UploadRejectedError` and `UploadCancelledError` do not respond to `:resume_handle` and do not include the suffix.
-  * `StreamMismatchError`: Verified with `.new` and `.from`, ensuring `resume_handle` and formatted messages with/without handle.
+  * `StreamMismatchError` & `RequestFailedError`: Verified with `.new` and `.from`, ensuring `cause`, `resume_handle`, and formatted messages with/without handle.
 
 ---
 
@@ -242,7 +242,7 @@ flowchart TD
 ### 3.8 Driver Initiation & Query Retries (`driver_retry_test.rb`)
 
 * **Session initiation retry loop**: Missing status header on HTTP 200 during `start` triggers `start_retry_policy` and succeeds upon header arrival.
-* **Initiation retry exhaustion on 200**: Continuous missing status headers on HTTP 200 during `start` exhaust retries and dispatch `Event::RequestFailed(kind: :retries_exhausted)` with `"Missing X-Goog-Upload-Status header in start response"`.
+* **Initiation retry exhaustion on 200**: Continuous missing status headers on HTTP 200 during `start` exhaust retries and dispatch `Event::RequestFailed(kind: :retries_exhausted)`, raising `RequestFailedError` with message `"Missing X-Goog-Upload-Status header in start response"` and root cause `BadResponseError`.
 * **Initiation retry exhaustion on non-200**: Continuous non-200 HTTP responses (e.g. 503) lacking status header exhaust retries and return `Event::HttpResponse` directly, allowing `Rules` to raise `BadResponseError` preserving the HTTP status code and message.
 * **Control plane non-retry**: Missing status header on `query` does not retry inside `execute_send_query`, returning `Event::HttpResponse` immediately to drive protocol recovery.
 

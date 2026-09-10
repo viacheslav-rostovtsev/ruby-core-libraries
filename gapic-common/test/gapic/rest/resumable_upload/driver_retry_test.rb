@@ -88,12 +88,13 @@ class DriverRetryTest < Minitest::Test
     )
 
     driver = Driver.new client_stub: stub, config: config
-    err = assert_raises BadResponseError do
+    err = assert_raises RequestFailedError do
       driver.run
     end
 
     assert_match(/Missing X-Goog-Upload-Status/, err.message)
     assert_equal 200, err.status_code
+    assert_instance_of BadResponseError, err.cause
     assert stub.requests.size > 1
   end
 

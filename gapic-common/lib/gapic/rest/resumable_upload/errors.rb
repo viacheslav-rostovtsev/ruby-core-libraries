@@ -154,7 +154,7 @@ module Gapic
         ##
         # Suffix appended to error message when a resume handle is present.
         # @return [String]
-        RESUMABLE_SUFFIX = " (upload_session is resumable: see #resume_handle)"
+        RESUMABLE_SUFFIX = " (upload session is resumable: see #resume_handle)"
 
         ##
         # Appends the uniform resumable suffix if resume_handle is non-nil.
@@ -439,6 +439,88 @@ module Gapic
         # @return [DeadlineExceededError]
         def self.from message = "Upload deadline exceeded", root_cause: nil, resume_handle: nil
           new message, root_cause: root_cause, resume_handle: resume_handle
+        end
+      end
+
+      ##
+      # Raised when an HTTP request fails (e.g. transport connection failure, request timeout, or retries exhausted).
+      #
+      # @!attribute [r] cause
+      #   @return [StandardError, nil] Underlying cause exception
+      # @!attribute [r] resume_handle
+      #   @return [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+      # @!attribute [r] status_code
+      #   @return [Integer, nil] HTTP status code if cause was a REST error
+      # @!attribute [r] status
+      #   @return [String, nil] Status description if cause was a REST error
+      # @!attribute [r] details
+      #   @return [Object, nil] Error details if cause was a REST error
+      # @!attribute [r] headers
+      #   @return [Object, nil] Response headers if cause was a REST error
+      #
+      class RequestFailedError < Gapic::Common::Error
+        include HasResumeHandle
+
+        # @return [Integer, nil]
+        attr_reader :status_code
+
+        # @return [String, nil]
+        attr_reader :status
+
+        # @return [Object, nil]
+        attr_reader :details
+
+        # @return [Object, nil]
+        attr_reader :headers
+
+        ##
+        # Initializes a new RequestFailedError.
+        #
+        # @param message [String, nil] Error message
+        # @param cause [StandardError, nil] Underlying cause exception
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+        # @param status_code [Integer, nil] HTTP status code
+        # @param status [String, nil] Status description
+        # @param details [Object, nil] Error details
+        # @param headers [Object, nil] Response headers
+        def initialize message = nil, cause: nil, resume_handle: nil,
+                       status_code: nil, status: nil, details: nil, headers: nil
+          @cause = cause
+          @resume_handle = resume_handle
+          @status_code = status_code || (cause.respond_to?(:status_code) ? cause.status_code : nil)
+          @status = status || (cause.respond_to?(:status) ? cause.status : nil)
+          @details = details || (cause.respond_to?(:details) ? cause.details : nil)
+          @headers = headers || (cause.respond_to?(:headers) ? cause.headers : nil)
+          msg = message || cause&.message || "Request failed"
+          super HasResumeHandle.append_suffix(msg, resume_handle)
+        end
+
+        ##
+        # Returns the underlying cause exception.
+        #
+        # @return [StandardError, nil]
+        def cause
+          @cause || super
+        end
+
+        ##
+        # Creates a RequestFailedError from a failure event or error.
+        #
+        # @param event_or_error [Event::RequestFailed, StandardError] Source event or error
+        # @param message [String, nil] Optional message override
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+        # @return [RequestFailedError]
+        def self.from event_or_error, message: nil, resume_handle: nil
+          if event_or_error.respond_to? :source_error
+            cause = event_or_error.source_error
+            msg = message || event_or_error.message || cause&.message || "Request failed"
+            new msg, cause: cause, resume_handle: resume_handle
+          elsif event_or_error.is_a? Exception
+            msg = message || event_or_error.message || "Request failed"
+            new msg, cause: event_or_error, resume_handle: resume_handle
+          else
+            new message || event_or_error.to_s, resume_handle: resume_handle
+          end
         end
       end
     end

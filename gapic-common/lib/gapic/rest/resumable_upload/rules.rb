@@ -575,7 +575,7 @@ module Gapic
         # @param state [State] Protocol state
         # @return [ResumeHandle, nil] Resume handle if upload URL is established, or nil
         def self.resume_handle_from state
-          return nil if state.nil? || state.upload_url.nil?
+          return nil if state.nil? || state.upload_url.nil? || [:rejected, :cancelled].include?(state.status)
 
           ResumeHandle.new upload_url: state.upload_url, chunk_size: state.chunk_size
         end
@@ -645,7 +645,8 @@ module Gapic
         # @param _config [CompleteUploadConfig] Session configuration
         # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.fail_with_request_error state, event, _config
-          err = event.source_error || Gapic::Common::Error.new(event.message || "Request failed")
+          handle = resume_handle_from state
+          err = RequestFailedError.from event, resume_handle: handle
           next_state = state.with(
             status:           :error,
             in_flight_length: 0,

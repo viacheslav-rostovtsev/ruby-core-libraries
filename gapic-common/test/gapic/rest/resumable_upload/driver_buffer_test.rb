@@ -199,7 +199,7 @@ class DriverBufferTest < Minitest::Test
     assert_includes err.message, "offset 500"
     assert_includes err.message, "buffered from 1000"
     assert_nil err.resume_handle
-    refute_includes err.message, "(upload_session is resumable: see #resume_handle)"
+    refute_includes err.message, "(upload session is resumable: see #resume_handle)"
   end
 
   def test_realign_buffer_rewind_unseekable_stream_with_resume_handle
@@ -221,7 +221,7 @@ class DriverBufferTest < Minitest::Test
     assert_equal 256, err.resume_handle.chunk_size
     assert_includes err.message, "offset 500"
     assert_includes err.message, "buffered from 1000"
-    assert_includes err.message, "(upload_session is resumable: see #resume_handle)"
+    assert_includes err.message, "(upload session is resumable: see #resume_handle)"
   end
 
   def test_driver_resume_handle_property
@@ -237,6 +237,18 @@ class DriverBufferTest < Minitest::Test
     refute_nil handle
     assert_equal "https://upload.example.com/session_2", handle.upload_url
     assert_equal 512, handle.chunk_size
+
+    driver.core.instance_variable_set(
+      :@state,
+      driver.core.state.with(status: :rejected, upload_url: "https://upload.example.com/session_2", chunk_size: 512)
+    )
+    assert_nil driver.resume_handle
+
+    driver.core.instance_variable_set(
+      :@state,
+      driver.core.state.with(status: :cancelled, upload_url: "https://upload.example.com/session_2", chunk_size: 512)
+    )
+    assert_nil driver.resume_handle
   end
 
   # ============================================================================
@@ -327,7 +339,7 @@ class DriverBufferTest < Minitest::Test
     refute_nil err.resume_handle
     assert_equal "https://upload.example.com/session_resume", err.resume_handle.upload_url
     assert_includes err.message, "unexpected EOF during fast-forward"
-    assert_includes err.message, "(upload_session is resumable: see #resume_handle)"
+    assert_includes err.message, "(upload session is resumable: see #resume_handle)"
   end
 
   def test_realign_buffer_raises_stream_mismatch_when_server_offset_exceeds_upload_size
@@ -351,7 +363,7 @@ class DriverBufferTest < Minitest::Test
     refute_nil err.resume_handle
     assert_equal "https://upload.example.com/session_resume", err.resume_handle.upload_url
     assert_includes err.message, "Server reported offset 600 exceeds total upload size 500"
-    assert_includes err.message, "(upload_session is resumable: see #resume_handle)"
+    assert_includes err.message, "(upload session is resumable: see #resume_handle)"
   end
 
   private
