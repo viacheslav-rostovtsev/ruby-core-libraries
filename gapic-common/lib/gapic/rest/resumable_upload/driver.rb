@@ -237,7 +237,7 @@ module Gapic
         #
         # @return [Event::StartUpload, Event::ResumeUpload]
         def initial_event
-          if defined?(ResumeUploadConfig) && @config.is_a?(ResumeUploadConfig)
+          if @config.is_a? ResumeUploadConfig
             Event::ResumeUpload.new
           else
             Event::StartUpload.new
@@ -379,6 +379,13 @@ module Gapic
             )
           end
 
+          if @config.upload_size.nil? && @config.stream.respond_to?(:size) && server_offset > @config.stream.size
+            raise StreamMismatchError.new(
+              "Server reported offset #{server_offset} exceeds stream size #{@config.stream.size}",
+              resume_handle: resume_handle
+            )
+          end
+
           @config.stream.seek server_offset
           @buffer = "".b
           @buffer_start_offset = server_offset
@@ -394,6 +401,12 @@ module Gapic
         def realign_fast_forward_stream server_offset, buffer_end
           @buffer = "".b
           if @config.stream.respond_to? :seek
+            if @config.upload_size.nil? && @config.stream.respond_to?(:size) && server_offset > @config.stream.size
+              raise StreamMismatchError.new(
+                "Server reported offset #{server_offset} exceeds stream size #{@config.stream.size}",
+                resume_handle: resume_handle
+              )
+            end
             @config.stream.seek server_offset
           else
             needed_discard = server_offset - buffer_end

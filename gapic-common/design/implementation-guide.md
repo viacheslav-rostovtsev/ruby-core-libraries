@@ -199,6 +199,7 @@ When `Core` resolves a recovery query or offset realignment, the Driver executes
 3.  **Case 3: Server Offset Ahead of Buffer (`server_offset > buffer_end_offset`)**
     *   Occurs when resuming an existing session or when the server processed a previously timed-out request ahead of local state.
     *   If total `upload_size` is known and `server_offset > upload_size`, Driver raises a terminal `StreamMismatchError` with `resume_handle`.
+    *   If `upload_size` is `nil` and `stream.respond_to?(:size)` and `server_offset > stream.size`, Driver raises a terminal `StreamMismatchError` with `resume_handle` (preventing seek past EOF from silently succeeding on seekable streams).
     *   Driver resets `@buffer = "".b`.
     *   Driver advances the stream to `server_offset`:
         *   If seekable: `stream.seek(server_offset)`.
@@ -480,6 +481,7 @@ To realign the upload state, the `Driver` processes `Instruction::RealignBuffer(
     *   If `stream` is unseekable (e.g. Socket, Pipe, STDIN): the Driver raises terminal `UnseekableStreamError` (Category 3), attaching `resume_handle`.
 3.  **Fast-Forward Required (`server_offset > buffer_end_offset`)**:
     *   If total `upload_size` is known and `server_offset > upload_size`: Driver raises terminal `StreamMismatchError` with `resume_handle`.
+    *   If `upload_size` is `nil` and `stream.respond_to?(:size)` and `server_offset > stream.size`: Driver raises terminal `StreamMismatchError` with `resume_handle`.
     *   The Driver clears `@buffer = "".b`.
     *   If `stream.respond_to?(:seek)`: seeks to `server_offset`.
     *   If unseekable: reads and discards `server_offset - current_stream_pos` bytes from `stream`. If the stream encounters unexpected EOF before reaching `server_offset`, Driver raises terminal `StreamMismatchError` with `resume_handle`.

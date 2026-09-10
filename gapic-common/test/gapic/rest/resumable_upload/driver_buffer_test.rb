@@ -366,6 +366,30 @@ class DriverBufferTest < Minitest::Test
     assert_includes err.message, "(upload session is resumable: see #resume_handle)"
   end
 
+  def test_realign_buffer_fast_forward_seekable_stream_raises_stream_mismatch_when_exceeding_stream_size
+    stream = StringIO.new "hello"
+    resume_config = ResumeUploadConfig.new(
+      upload_url:  "https://upload.example.com/session_resume",
+      chunk_size:  256,
+      stream:      stream,
+      upload_size: nil
+    )
+    driver = Driver.new client_stub: @dummy_client, config: resume_config
+    driver.core.instance_variable_set(
+      :@state,
+      driver.core.state.with(status: :recovery, upload_url: "https://upload.example.com/session_resume", chunk_size: 256)
+    )
+
+    err = assert_raises StreamMismatchError do
+      driver.send :execute_realign_buffer, Instruction::RealignBuffer.new(server_offset: 1000)
+    end
+
+    refute_nil err.resume_handle
+    assert_equal "https://upload.example.com/session_resume", err.resume_handle.upload_url
+    assert_includes err.message, "Server reported offset 1000 exceeds stream size 5"
+    assert_includes err.message, "(upload session is resumable: see #resume_handle)"
+  end
+
   private
 
   def build_driver stream:

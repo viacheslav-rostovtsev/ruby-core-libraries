@@ -181,6 +181,7 @@ flowchart TD
 * **Stream mismatch errors (`StreamMismatchError`)**:
   * *Fast-forward unexpected EOF*: Unexpected EOF while discarding bytes from an unseekable stream raises `StreamMismatchError` with `resume_handle` and the uniform resumable suffix.
   * *Server offset exceeding upload size*: Server reporting an offset exceeding known `upload_size` raises `StreamMismatchError` with `resume_handle` and the uniform resumable suffix.
+  * *Server offset exceeding stream size on seekable stream with unknown upload size*: When `upload_size` is `nil` and the seekable stream responds to `:size`, server offset exceeding `stream.size` raises `StreamMismatchError` with `resume_handle` and the uniform resumable suffix (guarding against Ruby's seek beyond EOF).
 * **Driver Stream Position & Resume Offset**:
   * `Driver#stream_position`: Returns `@buffer_start_offset + @buffer.bytesize`.
   * `ResumeUploadConfig#stream_offset`: Initializes `Driver#instance_variable_get(:@buffer_start_offset)` and `Driver#stream_position`.
