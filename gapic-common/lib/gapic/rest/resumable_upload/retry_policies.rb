@@ -15,6 +15,7 @@
 # limitations under the License.
 
 require "gapic/common/retry_policy"
+require "gapic/rest/resumable_upload/rules"
 
 module Gapic
   module Rest
@@ -24,6 +25,9 @@ module Gapic
       #
       module RetryPolicies
         START_PREDICATE = lambda do |error_or_response|
+          status = extract_status_code error_or_response
+          return false if Rules::FATAL_STATUS_CODES.include? status
+
           headers = extract_headers error_or_response
           if headers
             status_hdr = headers["x-goog-upload-status"] || headers["X-Goog-Upload-Status"]
@@ -104,6 +108,23 @@ module Gapic
             error_or_response.response_headers
           elsif error_or_response.respond_to?(:response) && error_or_response.response.is_a?(Hash)
             error_or_response.response[:headers]
+          end
+        end
+
+        ##
+        # Extracts HTTP status code from Faraday response, error, or event object.
+        #
+        # @param error_or_response [Object]
+        # @return [Integer, nil]
+        def self.extract_status_code error_or_response
+          if error_or_response.respond_to? :status
+            error_or_response.status
+          elsif error_or_response.respond_to?(:response) && error_or_response.response.is_a?(Hash)
+            error_or_response.response[:status]
+          elsif error_or_response.respond_to? :status_code
+            error_or_response.status_code
+          elsif error_or_response.respond_to? :response_status
+            error_or_response.response_status
           end
         end
       end

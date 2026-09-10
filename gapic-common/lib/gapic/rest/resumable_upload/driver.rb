@@ -306,6 +306,7 @@ module Gapic
 
             status_hdr = Rules.header_value event.headers, "x-goog-upload-status"
             return event unless status_hdr.nil? || status_hdr.empty?
+            return event if Rules::FATAL_STATUS_CODES.include? event.status
 
             err = BadResponseError.new "Missing X-Goog-Upload-Status header in start response",
                                        event.status,

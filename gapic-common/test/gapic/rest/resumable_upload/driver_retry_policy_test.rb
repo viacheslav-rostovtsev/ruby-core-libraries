@@ -120,4 +120,20 @@ class DriverRetryPolicyTest < Minitest::Test
     assert_in_delta 2.0, data_policy.multiplier
     assert_same RetryPolicies::DATA_PLANE_PREDICATE, data_policy.retry_predicate
   end
+
+  def test_start_predicate_refutes_fatal_status_codes
+    [401, 403, 404, 405, 410, 413, 415].each do |code|
+      response_double = OpenStruct.new status: code, headers: {}
+      refute RetryPolicies::START_PREDICATE.call(response_double),
+             "Expected START_PREDICATE to return false for fatal status #{code}"
+    end
+  end
+
+  def test_start_predicate_retries_missing_header_for_non_fatal_codes
+    [200, 400, 500, 503].each do |code|
+      response_double = OpenStruct.new status: code, headers: {}
+      assert RetryPolicies::START_PREDICATE.call(response_double),
+             "Expected START_PREDICATE to return true for non-fatal status #{code} with missing status header"
+    end
+  end
 end
