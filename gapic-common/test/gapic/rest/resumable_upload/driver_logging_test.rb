@@ -17,6 +17,7 @@
 require "test_helper"
 require "gapic/rest/resumable_upload"
 require "stringio"
+require "google/rpc/error_details_pb"
 
 ##
 # Integration and unit tests for Driver logging concerns.
@@ -288,13 +289,13 @@ class DriverLoggingTest < Minitest::Test
       driver.run
     end
 
-    assert_equal "Upload rejected by server with HTTP 403 Permission Denied: Bucket access denied", err.message
+    assert_equal "Upload rejected by server with HTTP 403 PERMISSION_DENIED: Bucket access denied", err.message
 
     warn_entries = recording.entries.select { |e| e.severity == Logger::WARN }
     refute_empty warn_entries
     fail_warn = warn_entries.find { |e| e.message.fields["recipe"] == "fail_with_rejected" }
     refute_nil fail_warn
-    assert_equal "Upload rejected by server with HTTP 403 Permission Denied: Bucket access denied",
+    assert_equal "Upload rejected by server with HTTP 403 PERMISSION_DENIED: Bucket access denied",
                  fail_warn.message.fields["error"]
 
     debug_entries = recording.entries.select { |e| e.severity == Logger::DEBUG && e.message.message.include?("403") }
@@ -416,6 +417,63 @@ class DriverLoggingTest < Minitest::Test
     refute_nil fail_warn
     assert_equal "Upload deadline exceeded", fail_warn.message.fields["error"]
     assert_nil fail_warn.message.fields["responseBody"]
+  end
+
+  def test_error_info_reason_in_details_survives_in_error_and_logs
+    recording = RecordingLogger.new
+    error_info = Google::Rpc::ErrorInfo.new(
+      reason:   "SERVICE_DISABLED",
+      domain:   "googleapis.com",
+      metadata: { "consumer" => "projects/12345", "service" => "storage.googleapis.com" }
+    )
+    error_info_any = Google::Protobuf::Any.pack error_info
+    raw_body = JSON.dump(
+      {
+        "error" => {
+          "code"    => 403,
+          "message" => "Google Cloud Storage API has not been used in project 12345 or it is disabled.",
+          "status"  => "PERMISSION_DENIED",
+          "details" => [JSON.parse(error_info_any.to_json)]
+        }
+      }
+    )
+    faraday_err = Faraday::ClientError.new "Client error", {
+      status:  403,
+      headers: { "x-goog-upload-status" => "final" },
+      body:    raw_body
+    }
+    stub = FakeStub.new [faraday_err]
+    config = CompleteUploadConfig.new(
+      initial_url: "https://storage.googleapis.com/upload",
+      stream:      StringIO.new("data"),
+      upload_size: 4,
+      chunk_size:  256
+    )
+
+    driver = Driver.new client_stub: stub, config: config, logger: recording
+    err = assert_raises UploadRejectedError do
+      driver.run
+    end
+
+    refute_nil err.details
+    unpacked_info = err.details.find { |d| d.is_a? Google::Rpc::ErrorInfo }
+    refute_nil unpacked_info
+    assert_equal "SERVICE_DISABLED", unpacked_info.reason
+    assert_equal "googleapis.com", unpacked_info.domain
+    assert_equal "projects/12345", unpacked_info.metadata["consumer"]
+
+    expected_msg = "Upload rejected by server with HTTP 403 PERMISSION_DENIED: " \
+                   "Google Cloud Storage API has not been used in project 12345 or it is disabled."
+    assert_equal expected_msg, err.message
+    assert_equal 403, err.status_code
+    assert_equal "PERMISSION_DENIED", err.status
+    assert_equal raw_body, err.response_body
+
+    warn_entries = recording.entries.select { |e| e.severity == Logger::WARN }
+    fail_warn = warn_entries.find { |e| e.message.fields["recipe"] == "fail_with_rejected" }
+    refute_nil fail_warn
+    assert_equal expected_msg, fail_warn.message.fields["error"]
+    assert_equal raw_body, fail_warn.message.fields["responseBody"]
   end
 
   private

@@ -195,7 +195,7 @@ class RulesErrorTest < Minitest::Test
     assert_equal :rejected, next_state.status
     err = next_state.last_error
     assert_instance_of UploadRejectedError, err
-    assert_equal "Upload rejected by server with HTTP 403 Permission Denied: The caller does not have permission",
+    assert_equal "Upload rejected by server with HTTP 403 PERMISSION_DENIED: The caller does not have permission",
                  err.message
     assert_equal 403, err.status_code
     assert_equal "PERMISSION_DENIED", err.status
@@ -238,7 +238,7 @@ class RulesErrorTest < Minitest::Test
     assert_equal :error, next_state.status
     err = next_state.last_error
     assert_instance_of BadResponseError, err
-    assert_equal "Resumable upload failed with HTTP 429 Resource Exhausted: Quota limit reached", err.message
+    assert_equal "Resumable upload failed with HTTP 429 RESOURCE_EXHAUSTED: Quota limit reached", err.message
     assert_equal 429, err.status_code
     assert_equal "RESOURCE_EXHAUSTED", err.status
     assert_equal details, err.status_details
@@ -257,6 +257,20 @@ class RulesErrorTest < Minitest::Test
     assert_equal "Resumable upload failed with HTTP 503 Service Unavailable (X-Goog-Upload-Status: missing)", err.message
     assert_equal 503, err.status_code
     assert_equal "Service unavailable", err.response_body
+  end
+
+  def test_format_status_preserves_canonical_status_token
+    wrapped_err = Gapic::Rest::Error.new(
+      "#{Gapic::Rest::Error::REST_ERROR_PREFIX}: Object not found",
+      404,
+      status:  "NOT_FOUND",
+      headers: { "x-goog-upload-status" => "final" }
+    )
+    resp = Event::HttpResponse.new status: 404, headers: { "x-goog-upload-status" => "final" },
+                                   body: "Not found", error: wrapped_err
+    err = UploadRejectedError.from resp
+    assert_equal "Upload rejected by server with HTTP 404 NOT_FOUND: Object not found", err.message
+    assert_equal "NOT_FOUND", err.status
   end
 
   def test_error_class_inheritance_hierarchy

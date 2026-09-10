@@ -407,8 +407,8 @@ Terminal errors provide actionable context so downstream SDK callers can inspect
     *   When `event.error` is present (from `Gapic::Rest::Error.wrap_faraday_error`), factories source `status_code`, `status`, `details`/`status_details`, and `headers`/`header`.
     *   The prefix literal `Gapic::Rest::Error::REST_ERROR_PREFIX` (`"An error has occurred when making a REST request"`) is stripped from `event.error.message` to avoid redundant prefixes.
     *   The resulting actionable message follows the format:
-        *   For `UploadRejectedError`: `"Upload rejected by server with HTTP #{status_code} #{status_name}: #{inner_message}"` (e.g., `"Upload rejected by server with HTTP 403 Permission Denied: The caller does not have permission"`).
-        *   For `BadResponseError`: `"Resumable upload failed with HTTP #{status_code} #{status_name}: #{inner_message}"` (e.g., `"Resumable upload failed with HTTP 429 Resource Exhausted: Quota limit reached"`).
+        *   For `UploadRejectedError`: `"Upload rejected by server with HTTP #{status_code} #{status_name}: #{inner_message}"` (e.g., `"Upload rejected by server with HTTP 403 PERMISSION_DENIED: The caller does not have permission"`).
+        *   For `BadResponseError`: `"Resumable upload failed with HTTP #{status_code} #{status_name}: #{inner_message}"` (e.g., `"Resumable upload failed with HTTP 429 RESOURCE_EXHAUSTED: Quota limit reached"`).
 *   **Fallback Formatting**:
     *   When `event.error` is absent, factories fall back to `event.status` and `event.headers`, naming the status and including the detailed `X-Goog-Upload-Status` header:
         *   For `UploadRejectedError`: `"Upload rejected by server with HTTP #{event.status} #{status_name} (X-Goog-Upload-Status: 'final')"`.

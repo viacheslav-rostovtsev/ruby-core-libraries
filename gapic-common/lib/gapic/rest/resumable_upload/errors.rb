@@ -20,6 +20,9 @@ require "gapic/rest/error"
 module Gapic
   module Rest
     module ResumableUpload
+      ##
+      # @private
+      #
       HTTP_STATUS_PHRASES = {
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -51,7 +54,7 @@ module Gapic
           def format_status status
             return nil if status.nil? || status.to_s.empty?
 
-            status.to_s.split("_").map(&:capitalize).join(" ")
+            status.to_s
           end
 
           def clean_message raw_message
@@ -64,27 +67,19 @@ module Gapic
             msg.empty? ? nil : msg
           end
 
-          def build_attributes source, prefix: "Resumable upload failed"
-            if source.respond_to?(:error) && source.error
-              build_from_wrapped_error source, prefix: prefix
-            elsif source.is_a? Gapic::Rest::Error
-              build_from_rest_error source, prefix: prefix
-            elsif source.respond_to? :status
-              build_from_http_event source, prefix: prefix
-            elsif source.is_a? Integer
-              status_name = HTTP_STATUS_PHRASES[source]
-              status_part = status_name ? " #{status_name}" : ""
-              ["#{prefix} with HTTP #{source}#{status_part}".strip, source, nil, nil, nil]
+          def build_attributes event, prefix: "Resumable upload failed"
+            if event.respond_to?(:error) && event.error
+              build_from_wrapped_error event, prefix: prefix
             else
-              [source.to_s, nil, nil, nil, nil]
+              build_from_http_event event, prefix: prefix
             end
           end
 
           private
 
-          def build_from_wrapped_error source, prefix:
-            err = source.error
-            status_code = err.status_code || (source.respond_to?(:status) ? source.status : nil)
+          def build_from_wrapped_error event, prefix:
+            err = event.error
+            status_code = err.status_code || (event.respond_to?(:status) ? event.status : nil)
             status = err.status
             status_name = format_status(status) || HTTP_STATUS_PHRASES[status_code]
             status_part = status_name ? " #{status_name}" : ""
@@ -94,27 +89,13 @@ module Gapic
                   else
                     "#{prefix} with HTTP #{status_code}#{status_part}"
                   end
-            headers = err.headers || (source.respond_to?(:headers) ? source.headers : nil)
+            headers = err.headers || (event.respond_to?(:headers) ? event.headers : nil)
             [msg, status_code, status, err.details, headers]
           end
 
-          def build_from_rest_error source, prefix:
-            status_code = source.status_code
-            status = source.status
-            status_name = format_status(status) || HTTP_STATUS_PHRASES[status_code]
-            status_part = status_name ? " #{status_name}" : ""
-            inner_msg = clean_message source.message
-            msg = if inner_msg
-                    "#{prefix} with HTTP #{status_code}#{status_part}: #{inner_msg}"
-                  else
-                    "#{prefix} with HTTP #{status_code}#{status_part}"
-                  end
-            [msg, status_code, status, source.details, source.headers]
-          end
-
-          def build_from_http_event source, prefix:
-            status_code = source.status
-            headers = source.respond_to?(:headers) && source.headers ? source.headers : {}
+          def build_from_http_event event, prefix:
+            status_code = event.status
+            headers = event.respond_to?(:headers) && event.headers ? event.headers : {}
             upload_status = headers["x-goog-upload-status"] || headers["X-Goog-Upload-Status"]
             status_desc = upload_status ? "'#{upload_status}'" : "missing"
             status_name = HTTP_STATUS_PHRASES[status_code]
@@ -172,19 +153,12 @@ module Gapic
         # @param response_body [String, nil]
         def initialize message = nil, status_code = nil, status: nil, details: nil, headers: nil, response_body: nil
           @response_body = response_body
-          if message.is_a?(Integer) && status_code.is_a?(String)
-            message, status_code = status_code, message
-          elsif message.is_a?(Integer) && status_code.nil?
-            status_code = message
-            message = nil
-          end
-          message ||= "Received unexpected response with status code: #{status_code}" if status_code
           super message, status_code, status: status, details: details, headers: headers
         end
 
-        def self.from source, response_body: nil
-          body = response_body || (source.respond_to?(:body) ? source.body : nil)
-          message, status_code, status, details, headers = ErrorBuilder.build_attributes source
+        def self.from event, response_body: nil
+          body = response_body || (event.respond_to?(:body) ? event.body : nil)
+          message, status_code, status, details, headers = ErrorBuilder.build_attributes event
           new message, status_code, status: status, details: details, headers: headers, response_body: body
         end
       end
@@ -205,18 +179,13 @@ module Gapic
         # @param response_body [String, nil]
         def initialize message = nil, status_code = nil, status: nil, details: nil, headers: nil, response_body: nil
           @response_body = response_body
-          if status_code.nil? && response_body.nil? && message &&
-             !message.start_with?("Upload rejected by server")
-            @response_body = message
-            message = "Upload rejected by server: #{message}"
-          end
           super message, status_code, status: status, details: details, headers: headers
         end
 
-        def self.from source, response_body: nil
-          body = response_body || (source.respond_to?(:body) ? source.body : nil)
+        def self.from event, response_body: nil
+          body = response_body || (event.respond_to?(:body) ? event.body : nil)
           message, status_code, status, details, headers =
-            ErrorBuilder.build_attributes source, prefix: "Upload rejected by server"
+            ErrorBuilder.build_attributes event, prefix: "Upload rejected by server"
           new message, status_code, status: status, details: details, headers: headers, response_body: body
         end
       end
