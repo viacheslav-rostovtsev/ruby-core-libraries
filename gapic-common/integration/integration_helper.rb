@@ -50,10 +50,6 @@ class ShowcaseIntegrationTest < Minitest::Test
     def pos
       @io.pos
     end
-
-    def rewind
-      @io.rewind
-    end
   end
 
   attr_reader :logger
@@ -146,7 +142,8 @@ class ShowcaseIntegrationTest < Minitest::Test
       data_plane_retry_policy:    FAST_RETRY,
       timeout:                    10,
       chunk_size:                 DEFAULT_CHUNK_SIZE,
-      on_progress:                ->(progress) { @progress_records << progress }
+      on_progress:                ->(progress) { @progress_records << progress },
+      logger:                     @logger
     }
     unless overrides.key? :stream
       defaults[:stream] = StringIO.new payload(DEFAULT_PAYLOAD_SIZE)

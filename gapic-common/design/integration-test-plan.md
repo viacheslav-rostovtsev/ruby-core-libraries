@@ -255,7 +255,7 @@ Tests non-fatal transient retries, missing status headers, retry exhaustion, fat
 
 ### 2.5 Resumption Suite (`integration/resumable_upload/resume_test.rb`)
 
-Tests `Gapic::Rest::ResumableUpload::Session` resumption capabilities against Showcase. For full details, see [suite-d-resume-test-plan.md](./suite-d-resume-test-plan.md).
+Tests `Gapic::Rest::ResumableUpload::Session` resumption capabilities against Showcase.
 
 #### Case 1. Resume in-progress upload on seekable stream (`test_resume_in_progress_upload`)
 * Uploads chunk 1 via `raw_upload`, then resumes with a fresh session and full stream.
@@ -279,7 +279,7 @@ Tests `Gapic::Rest::ResumableUpload::Session` resumption capabilities against Sh
 
 #### Case 6. Golden user-style resume (`test_golden_user_style_resume_seekable`, `test_golden_user_style_resume_unseekable`)
 * User raises exception in `on_progress` carrying `session.resume_handle` on first upload ack.
-* Fresh session resumes via `resume_handle: handle` and completes the transfer. Tested on both seekable and unseekable streams (rewound to 0).
+* Fresh session resumes via `resume_handle: handle` and completes the transfer. Tested on both seekable streams and fresh unseekable streams starting at byte 0.
 
 #### Case 7. Lifecycle and contract violations (`test_lifecycle_violations`)
 * Verifies second `start` and `resume` on bound session raise `SessionStateError`, and bare `resume` raises `ArgumentError`.

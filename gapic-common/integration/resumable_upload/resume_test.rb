@@ -78,6 +78,7 @@ class ResumeTest < ShowcaseIntegrationTest
 
     assert_equal DEFAULT_PAYLOAD_SIZE, parsed["size"]
     assert_equal [:initiating, :uploading, :uploading, :uploading, :finalizing, :completed], phases
+    refute_includes @log_output.string, "retry_recovery"
   end
 
   # D3b. Non-fatal 409 error on query during resume triggers protocol retry_recovery without progress notification.
@@ -97,6 +98,7 @@ class ResumeTest < ShowcaseIntegrationTest
     assert_equal DEFAULT_PAYLOAD_SIZE, parsed["size"]
     assert_equal [:initiating, :uploading, :uploading, :uploading, :finalizing, :completed], phases
     refute_includes phases, :recovering
+    assert_includes @log_output.string, "retry_recovery"
   end
 
   # D4. Resume fast-forwards by discarding bytes on an unseekable stream starting at byte 0.
@@ -173,9 +175,8 @@ class ResumeTest < ShowcaseIntegrationTest
     refute session2.resumable?
   end
 
-  # D6b. Golden user-style resume on an unseekable stream rewound to 0 before resumption.
+  # D6b. Golden user-style resume with a fresh unseekable stream starting at byte 0.
   def test_golden_user_style_resume_unseekable
-    stream = UnseekableStream.new payload(DEFAULT_PAYLOAD_SIZE)
     session1 = nil
     on_progress = lambda do |progress|
       if progress.phase == :uploading && progress.bytes_uploaded == DEFAULT_CHUNK_SIZE
@@ -183,7 +184,7 @@ class ResumeTest < ShowcaseIntegrationTest
       end
     end
 
-    session1 = build_session stream: stream, on_progress: on_progress
+    session1 = build_session stream: UnseekableStream.new(payload(DEFAULT_PAYLOAD_SIZE)), on_progress: on_progress
     err = assert_raises UserPauseError do
       session1.start
     end
@@ -193,8 +194,7 @@ class ResumeTest < ShowcaseIntegrationTest
     handle = err.resume_handle
     refute_nil handle
 
-    stream.rewind
-    session2 = build_session stream: stream
+    session2 = build_session stream: UnseekableStream.new(payload(DEFAULT_PAYLOAD_SIZE))
     result = session2.resume resume_handle: handle
     parsed = JSON.parse result
 
