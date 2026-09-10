@@ -73,6 +73,7 @@ module Gapic
         # @return [Array<Symbol>]
         RECIPES = [
           :start_session,
+          :resume_session,
           :begin_transmission,
           :send_chunk,
           :send_upload_finalize,
@@ -99,6 +100,7 @@ module Gapic
         # @return [Hash<Symbol, Symbol>]
         RECIPE_PHASES = {
           start_session:             :initiating,
+          resume_session:            :initiating,
           begin_transmission:        :uploading,
           ack_chunk:                 :uploading,
           realign_from_recovery:     :uploading,
@@ -136,6 +138,8 @@ module Gapic
           case event
           when Event::StartUpload, Event::StartUpload.singleton_class
             :start_upload
+          when Event::ResumeUpload, Event::ResumeUpload.singleton_class
+            :resume_upload
           when Event::ChunkRead
             classify_chunk_read event
           when Event::Cancel, Event::Cancel.singleton_class
@@ -169,6 +173,8 @@ module Gapic
           recipe = case [state.status, shape]
                    in [:initializing, :start_upload]
                      :start_session
+                   in [:initializing, :resume_upload]
+                     :resume_session
                    in [:starting, :response_active]
                      :begin_transmission
                    in [:transmission_reading, :chunk_read_full]
@@ -258,6 +264,33 @@ module Gapic
               headers: config.initial_headers,
               body:    config.initial_body
             )
+          ]
+          [next_state, instructions]
+        end
+
+        ##
+        # @private
+        # Resumes an existing upload session by transitioning to recovery and querying backend offset.
+        #
+        # @param state [State] Current state
+        # @param _event [Object] Dispatched event
+        # @param config [ResumeUploadConfig] Resume session configuration
+        # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
+        def self.resume_session state, _event, config
+          next_state = state.with(
+            status:     :recovery,
+            upload_url: config.upload_url,
+            chunk_size: config.chunk_size,
+            offset:     0
+          )
+          progress = Progress.new(
+            phase:          :initiating,
+            bytes_uploaded: 0,
+            total_bytes:    config.upload_size
+          )
+          instructions = [
+            Instruction::NotifyProgress.new(progress: progress),
+            Instruction::SendQuery.new(url: config.upload_url)
           ]
           [next_state, instructions]
         end
@@ -765,6 +798,8 @@ module Gapic
         def self.classify_event_class event_class
           if event_class == Event::StartUpload
             :start_upload
+          elsif event_class == Event::ResumeUpload
+            :resume_upload
           elsif event_class == Event::Cancel
             :user_cancel
           elsif event_class == Event::GlobalDeadlineExceeded

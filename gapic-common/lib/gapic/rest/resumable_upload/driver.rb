@@ -67,6 +67,14 @@ module Gapic
         end
 
         ##
+        # Returns the current absolute stream position represented by the Driver buffer window.
+        #
+        # @return [Integer] Current absolute byte offset
+        def stream_position
+          @buffer_start_offset + @buffer.bytesize
+        end
+
+        ##
         # Initializes a new Resumable Upload Driver.
         #
         # @param client_stub [Gapic::Rest::ClientStub] Underlying REST client stub
@@ -78,7 +86,7 @@ module Gapic
           @config = config
           @core = core || Core.new(config)
           @buffer = "".b
-          @buffer_start_offset = 0
+          @buffer_start_offset = config.respond_to?(:stream_offset) && config.stream_offset ? config.stream_offset : 0
 
           endpoint = client_stub.respond_to?(:endpoint) ? client_stub.endpoint : nil
           setup_logging logger: logger || (client_stub.respond_to?(:logger) ? client_stub.logger : nil),
@@ -128,7 +136,7 @@ module Gapic
         def run
           @upload_log = UploadLog.new stub_logger, upload_id: LoggingConcerns.random_uuid4
           @deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + resolve_timeout
-          pending_event = Event::StartUpload.new
+          pending_event = initial_event
 
           loop do
             instructions = dispatch_event pending_event
@@ -225,6 +233,19 @@ module Gapic
 
         ##
         # @private
+        # Determines the initial event to dispatch based on configuration class.
+        #
+        # @return [Event::StartUpload, Event::ResumeUpload]
+        def initial_event
+          if defined?(ResumeUploadConfig) && @config.is_a?(ResumeUploadConfig)
+            Event::ResumeUpload.new
+          else
+            Event::StartUpload.new
+          end
+        end
+
+        ##
+        # @private
         # Resolves the total upload deadline timeout in seconds.
         #
         # @return [Numeric] Timeout in seconds
@@ -299,6 +320,13 @@ module Gapic
         #
         def execute_realign_buffer instruction
           server_offset = instruction.server_offset
+          if @config.upload_size && server_offset > @config.upload_size
+            raise StreamMismatchError.new(
+              "Server reported offset #{server_offset} exceeds total upload size #{@config.upload_size}",
+              resume_handle: resume_handle
+            )
+          end
+
           buffer_start = @buffer_start_offset
           buffer_end = @buffer_start_offset + @buffer.bytesize
 
@@ -371,7 +399,13 @@ module Gapic
             needed_discard = server_offset - buffer_end
             while needed_discard.positive?
               chunk = @config.stream.read [needed_discard, 65_536].min
-              break if chunk.nil? || chunk.empty?
+              if chunk.nil? || chunk.empty?
+                raise StreamMismatchError.new(
+                  "Stream encountered unexpected EOF during fast-forward to offset #{server_offset} " \
+                  "(expected at least #{needed_discard} more bytes)",
+                  resume_handle: resume_handle
+                )
+              end
 
               needed_discard -= chunk.bytesize
             end

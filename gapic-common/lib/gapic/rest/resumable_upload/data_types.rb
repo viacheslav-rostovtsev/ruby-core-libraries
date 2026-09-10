@@ -114,6 +114,103 @@ module Gapic
       end
 
       ##
+      # Immutable configuration for resuming an existing upload session.
+      #
+      # @!attribute [r] upload_url
+      #   @return [String] Session upload URL returned by Scotty backend
+      # @!attribute [r] chunk_size
+      #   @return [Integer] Explicit chunk size in bytes (must be a positive integer)
+      # @!attribute [r] stream
+      #   @return [IO] Binary input stream to upload
+      # @!attribute [r] stream_offset
+      #   @return [Integer] Absolute byte offset at which the stream is currently positioned (defaults to 0)
+      # @!attribute [r] upload_size
+      #   @return [Integer, nil] Total upload bytes if known upfront
+      # @!attribute [r] content_type
+      #   @return [String, nil] MIME type of uploaded media
+      # @!attribute [r] timeout
+      #   @return [Numeric, nil] Total upload timeout in seconds (zero/negative values treated as nil)
+      # @!attribute [r] start_retry_policy
+      #   @return [Gapic::Common::RetryPolicy, Hash, nil] Unused; preserved for interface parity with
+      #     {CompleteUploadConfig}.
+      # @!attribute [r] control_plane_retry_policy
+      #   @return [Gapic::Common::RetryPolicy, Hash, nil] Retry policy for session control commands (query/cancel).
+      #     Passing a {Gapic::Common::RetryPolicy} replaces the default policy.
+      #     Passing a Hash overrides specified settings while preserving unspecified defaults.
+      # @!attribute [r] data_plane_retry_policy
+      #   @return [Gapic::Common::RetryPolicy, Hash, nil] Retry policy for data transmission commands (upload/finalize).
+      #     Passing a {Gapic::Common::RetryPolicy} replaces the default policy.
+      #     Passing a Hash overrides specified settings while preserving unspecified defaults
+      #     (such as retry codes and predicates).
+      # @!attribute [r] on_progress
+      #   @return [Proc, nil] Callback invoked as `->(progress)` with a {Progress} instance
+      #
+      ResumeUploadConfig = Data.define(
+        :upload_url,
+        :chunk_size,
+        :stream,
+        :stream_offset,
+        :upload_size,
+        :content_type,
+        :timeout,
+        :start_retry_policy,
+        :control_plane_retry_policy,
+        :data_plane_retry_policy,
+        :on_progress
+      ) do
+        ##
+        # Initializes a new upload resume configuration.
+        #
+        # @param upload_url [String] Session upload URL
+        # @param chunk_size [Integer] Explicit chunk size in bytes (must be a positive integer)
+        # @param stream [IO] Binary input stream to upload
+        # @param stream_offset [Integer] Current absolute byte offset of the stream (defaults to 0)
+        # @param upload_size [Integer, nil] Total upload bytes if known upfront
+        # @param content_type [String, nil] MIME type of uploaded media
+        # @param timeout [Numeric, nil] Total upload timeout in seconds (zero/negative values treated as nil)
+        # @param start_retry_policy [Gapic::Common::RetryPolicy, Hash, nil] Unused; preserved for parity
+        # @param control_plane_retry_policy [Gapic::Common::RetryPolicy, Hash, nil] Retry policy for control commands
+        # @param data_plane_retry_policy [Gapic::Common::RetryPolicy, Hash, nil] Retry policy for data commands
+        # @param on_progress [Proc, nil] Callback invoked as `->(progress)` with a {Progress} instance
+        # @raise [ArgumentError] If required arguments are missing or invalid
+        #
+        def initialize upload_url:,
+                       chunk_size:,
+                       stream:,
+                       stream_offset: 0,
+                       upload_size: nil,
+                       content_type: nil,
+                       timeout: nil,
+                       start_retry_policy: nil,
+                       control_plane_retry_policy: nil,
+                       data_plane_retry_policy: nil,
+                       on_progress: nil
+          raise ArgumentError, "upload_url is required" if upload_url.nil? || upload_url.to_s.strip.empty?
+          unless chunk_size.is_a?(Integer) && chunk_size.positive?
+            raise ArgumentError, "chunk_size must be a positive integer"
+          end
+          raise ArgumentError, "stream is required" if stream.nil?
+          if !stream_offset.is_a?(Integer) || stream_offset.negative?
+            raise ArgumentError, "stream_offset must be a non-negative integer"
+          end
+
+          super(
+            upload_url:                 upload_url,
+            chunk_size:                 chunk_size,
+            stream:                     stream,
+            stream_offset:              stream_offset,
+            upload_size:                upload_size,
+            content_type:               content_type,
+            timeout:                    timeout,
+            start_retry_policy:         start_retry_policy,
+            control_plane_retry_policy: control_plane_retry_policy,
+            data_plane_retry_policy:    data_plane_retry_policy,
+            on_progress:                on_progress
+          )
+        end
+      end
+
+      ##
       # Immutable progress snapshot passed to the `on_progress` callback.
       #
       # @!attribute [r] phase

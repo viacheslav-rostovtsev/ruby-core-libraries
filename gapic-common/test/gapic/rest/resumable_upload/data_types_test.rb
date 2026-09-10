@@ -130,4 +130,57 @@ class DataTypesTest < Minitest::Test
       handle.upload_url = "https://mutated.com"
     end
   end
+
+  def test_resume_upload_config_defaults
+    stream = StringIO.new "content"
+    config = ResumeUploadConfig.new(
+      upload_url: "https://upload.example.com/session1",
+      chunk_size: 1024,
+      stream:     stream
+    )
+
+    assert_equal "https://upload.example.com/session1", config.upload_url
+    assert_equal 1024, config.chunk_size
+    assert_same stream, config.stream
+    assert_equal 0, config.stream_offset
+    assert_nil config.upload_size
+    assert_nil config.content_type
+    assert_nil config.timeout
+    assert_nil config.start_retry_policy
+    assert_nil config.control_plane_retry_policy
+    assert_nil config.data_plane_retry_policy
+    assert_nil config.on_progress
+  end
+
+  def test_resume_upload_config_validations
+    stream = StringIO.new "content"
+
+    assert_raises ArgumentError do
+      ResumeUploadConfig.new upload_url: nil, chunk_size: 1024, stream: stream
+    end
+
+    assert_raises ArgumentError do
+      ResumeUploadConfig.new upload_url: "   ", chunk_size: 1024, stream: stream
+    end
+
+    assert_raises ArgumentError do
+      ResumeUploadConfig.new upload_url: "https://example.com", chunk_size: 0, stream: stream
+    end
+
+    assert_raises ArgumentError do
+      ResumeUploadConfig.new upload_url: "https://example.com", chunk_size: -10, stream: stream
+    end
+
+    assert_raises ArgumentError do
+      ResumeUploadConfig.new upload_url: "https://example.com", chunk_size: "1024", stream: stream
+    end
+
+    assert_raises ArgumentError do
+      ResumeUploadConfig.new upload_url: "https://example.com", chunk_size: 1024, stream: nil
+    end
+
+    assert_raises ArgumentError do
+      ResumeUploadConfig.new upload_url: "https://example.com", chunk_size: 1024, stream: stream, stream_offset: -1
+    end
+  end
 end

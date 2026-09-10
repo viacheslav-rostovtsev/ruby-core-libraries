@@ -178,6 +178,12 @@ flowchart TD
 * **Fast-forward stream**:
   * *Seekable*: Seeks stream forward and resets buffer to target offset.
   * *Unseekable*: Reads and discards needed bytes from stream to advance to target offset.
+* **Stream mismatch errors (`StreamMismatchError`)**:
+  * *Fast-forward unexpected EOF*: Unexpected EOF while discarding bytes from an unseekable stream raises `StreamMismatchError` with `resume_handle` and the uniform resumable suffix.
+  * *Server offset exceeding upload size*: Server reporting an offset exceeding known `upload_size` raises `StreamMismatchError` with `resume_handle` and the uniform resumable suffix.
+* **Driver Stream Position & Resume Offset**:
+  * `Driver#stream_position`: Returns `@buffer_start_offset + @buffer.bytesize`.
+  * `ResumeUploadConfig#stream_offset`: Initializes `Driver#instance_variable_get(:@buffer_start_offset)` and `Driver#stream_position`.
 * **Driver Session Snapshot (`Driver#resume_handle`)**:
   * Returns `nil` before upload session URL is established.
   * Returns `ResumeHandle` snapshot during active upload progression.
@@ -228,6 +234,8 @@ flowchart TD
 
 * **Multi-chunk upload**: Multi-chunk stream uploads with active status headers succeed and return the final response body String.
 * **Protocol recovery during chunk upload**: Missing status header on chunk response triggers `query` recovery and resumes chunk transmission from the server-confirmed offset.
+* **Scripted resume upload (`test_resume_upload_success`)**: Resuming an existing session via `ResumeUploadConfig` dispatches `Event::ResumeUpload`, executes `query` command, fast-forwards stream to server-reported offset, and transmits remaining chunks with accurate `Progress` notifications.
+* **Resume recovery retry (`test_resume_upload_with_409_recovery_retry`)**: HTTP 409 active response to recovery query triggers `:retry_recovery` retry query and successfully resumes once query returns 200 active.
 
 ---
 
@@ -296,6 +304,8 @@ flowchart TD
   * Verifies `Driver` passes explicit `method_name` strings (`"ResumableUpload.start"`, `"ResumableUpload.upload"`) to `ClientStub#make_post_request`.
 * **Multi-chunk upload lifecycle (`test_multi_chunk_upload_logs_lifecycle_entries`)**:
   * Confirms multi-chunk upload emits `INFO` lifecycle entries for `start_session`, `begin_transmission`, and completion while suppressing per-chunk `ack_chunk` at `INFO`.
+* **Resume upload lifecycle (`test_resume_upload_logs_resume_session_entry`)**:
+  * Confirms resume upload emits `INFO` lifecycle entry for `resume_session` with message `"Resuming upload session"`, abridged `uploadUrl`, and `chunkSize`.
 * **Protocol recovery logging (`test_recovery_scenario_logs_enter_recovery_and_realign`)**:
   * Simulates HTTP 503 during chunk upload followed by recovery query; asserts `INFO` logs include both `enter_recovery` and `realign_from_recovery`.
 * **Terminal failure & unmatched transition logging (`test_fatal_failure_logs_warn_with_fail_with_recipe`, `test_unmatched_transition_logs_warn_and_reraises`, `test_lifecycle_warn_includes_response_body_for_rejected_error`, `test_lifecycle_warn_includes_response_body_for_bad_response_error`, `test_lifecycle_warn_omits_response_body_when_error_lacks_it`, `test_error_info_reason_in_details_survives_in_error_and_logs`)**:

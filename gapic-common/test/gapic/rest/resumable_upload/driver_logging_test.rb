@@ -146,6 +146,45 @@ class DriverLoggingTest < Minitest::Test
     assert_includes info_recipes, "realign_from_recovery"
   end
 
+  def test_resume_upload_logs_resume_session_entry
+    recording = RecordingLogger.new
+    responses = [
+      FakeResponse.new(
+        200,
+        {
+          "X-Goog-Upload-Status"        => "active",
+          "X-Goog-Upload-Size-Received" => "0"
+        },
+        ""
+      ),
+      FakeResponse.new(
+        200,
+        { "X-Goog-Upload-Status" => "final" },
+        "done"
+      )
+    ]
+
+    stub = FakeStub.new responses
+    config = ResumeUploadConfig.new(
+      upload_url:  "https://storage.googleapis.com/session?id=123",
+      stream:      StringIO.new("hello world"),
+      upload_size: 11,
+      chunk_size:  256
+    )
+
+    driver = Driver.new client_stub: stub, config: config, logger: recording
+    driver.run
+
+    resume_entry = recording.entries.find do |e|
+      e.severity == Logger::INFO && e.message.fields["recipe"] == "resume_session"
+    end
+    refute_nil resume_entry
+    assert_equal Logger::INFO, resume_entry.severity
+    assert_equal "Resuming upload session", resume_entry.message.message
+    assert_equal 256, resume_entry.message.fields["chunkSize"]
+    assert_includes resume_entry.message.fields["uploadUrl"], "session?id="
+  end
+
   def test_fatal_failure_logs_warn_with_fail_with_recipe
     recording = RecordingLogger.new
     responses = [

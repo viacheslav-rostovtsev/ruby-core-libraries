@@ -58,6 +58,26 @@ class RulesDecideTest < Minitest::Test
     assert_instance_of Instruction::SendStart, decision.instructions[1]
   end
 
+  def test_row_initializing_resume_upload
+    resume_config = ResumeUploadConfig.new(
+      upload_url:  "https://example.com/upload/session1",
+      chunk_size:  512,
+      stream:      StringIO.new("data"),
+      upload_size: 1024
+    )
+    decision = Rules.decide State.new(status: :initializing), Event::ResumeUpload.new, resume_config
+    assert_equal :initializing, decision.from_status
+    assert_equal :resume_upload, decision.shape
+    assert_equal :resume_session, decision.recipe
+    assert_equal :recovery, decision.next_state.status
+    assert_equal "https://example.com/upload/session1", decision.next_state.upload_url
+    assert_equal 512, decision.next_state.chunk_size
+    assert_equal 0, decision.next_state.offset
+    assert_recipe_progress_notification decision
+    assert_instance_of Instruction::SendQuery, decision.instructions[1]
+    assert_equal "https://example.com/upload/session1", decision.instructions[1].url
+  end
+
   def test_row_starting_response_active
     active_resp = Event::HttpResponse.new(
       status:  200,

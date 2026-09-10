@@ -22,7 +22,7 @@ The `Driver` executes all operations with side-effects. It interacts with HTTP t
 
 Crucially, the Driver delegates all **Category 1 (Transient)** transport retries directly to `Gapic::Common::RetryPolicy`. Transient retries occur entirely within the Driver's network execution wrapper. The `Core` state machine is never exposed to transient noise, receiving only verified successful HTTP responses or terminal transport exceptions.
 
-The Driver also exposes `Driver#resume_handle`, returning a `ResumeHandle` (or `nil` if initiation has not established an upload URL). Reading this property mid-run provides a best-effort snapshot of current session parameters.
+The Driver also exposes `Driver#resume_handle`, returning a `ResumeHandle` (or `nil` if initiation has not established an upload URL). Reading this property mid-run provides a best-effort snapshot of current session parameters. In addition, `Driver#stream_position` returns the current absolute stream offset (`@buffer_start_offset + @buffer.bytesize`).
 
 ### 1.2 Core (State Container)
 The `Core` maintains the immutable `State` snapshot. When `Core#dispatch(event)` is invoked by the Driver, Core forwards `@state`, the event, and static configuration to `Rules.decide`. Core mutates `@state` to `decision.next_state`, records the decision in `@last_decision`, and returns `decision.instructions` back to the Driver. Core contains zero protocol branching logic and zero side effects.
@@ -76,7 +76,31 @@ end
 * Terminal failures and completed cancellations do not emit `Progress` notifications; however, entering the `:cancelling` phase does.
 * Public phases (`Progress::PHASES`): `:initiating`, `:uploading`, `:recovering`, `:finalizing`, `:cancelling`, `:completed`.
 
-### 2.2 Protocol State (`State`) & Decisions (`Decision`)
+### 2.2 Resume Configuration (`ResumeUploadConfig`)
+```ruby
+module Gapic
+  module Rest
+    module ResumableUpload
+      ResumeUploadConfig = Data.define(
+        :upload_url,                       # [String] Upload session URL returned by Scotty backend
+        :chunk_size,                       # [Integer] Chunk size in bytes (> 0)
+        :stream,                           # [IO] Binary input stream to upload
+        :stream_offset,                    # [Integer] Starting byte offset in stream (default: 0)
+        :upload_size,                      # [Integer, nil] Total upload bytes if known upfront
+        :content_type,                     # [String, nil] MIME type of uploaded media
+        :timeout,                          # [Numeric, nil] Total upload timeout in seconds (zero/negative treated as nil)
+        :start_retry_policy,               # [Gapic::Common::RetryPolicy, Hash, nil] Unused; retained for config parity
+        :control_plane_retry_policy,       # [Gapic::Common::RetryPolicy, Hash, nil] Policy or hash override for query/cancel commands
+        :data_plane_retry_policy,          # [Gapic::Common::RetryPolicy, Hash, nil] Policy or hash override for upload/finalize
+        :on_progress                       # [Proc, nil] Callback: ->(progress) with a Progress instance
+      )
+    end
+  end
+end
+```
+`ResumeUploadConfig` allows resuming an existing session directly using the session URL (typically obtained from `ResumeHandle#upload_url` or an error's `#resume_handle`).
+
+### 2.3 Protocol State (`State`) & Decisions (`Decision`)
 ```ruby
 module Gapic
   module Rest
@@ -106,7 +130,7 @@ module Gapic
 end
 ```
 
-### 2.3 Resume Handle (`ResumeHandle`)
+### 2.4 Resume Handle (`ResumeHandle`)
 ```ruby
 module Gapic
   module Rest
@@ -121,8 +145,9 @@ end
 ```
 `ResumeHandle` captures server-provided parameters that can be persisted to resume the upload session at a later time.
 
-### 2.4 Events Vocabulary (Driver -> Core)
-*   `Event::StartUpload`: Start the upload session.
+### 2.5 Events Vocabulary (Driver -> Core)
+*   `Event::StartUpload`: Start a new upload session.
+*   `Event::ResumeUpload.new(upload_url:, chunk_size:, upload_size:)`: Resume an existing upload session with a known upload URL.
 *   `Event::ChunkRead.new(bytes_buffered:, eof:)`: Binary data buffered in Driver memory; reports total bytes ready in buffer and whether the stream hit EOF.
 *   `Event::HttpResponse.new(status:, headers:, body:, error: nil)`: Dispatched for any completed HTTP exchange over the wire (including 2xx, 4xx, 5xx, or responses with missing/unexpected headers). Carries optional parsed `error` (`Gapic::Rest::Error`) when rescued from transport errors. `Core` inspects status and headers to determine protocol progression or recovery.
 *   `Event::RequestFailed.new(kind:, message:, source_error:)`: Dispatched when an HTTP request fails to produce a usable HTTP response (e.g., request timeout, transport connection errors, or `RetryPolicy` exhaustion).
@@ -132,7 +157,7 @@ end
 *   `Event::Cancel`: Caller requested session cancellation.
 *   `Event::GlobalDeadlineExceeded`: Absolute monotonic clock exceeded the session deadline (`@deadline`) computed at the start of `Driver#run`.
 
-### 2.5 Instructions Vocabulary (Core -> Driver)
+### 2.6 Instructions Vocabulary (Core -> Driver)
 *   `Instruction::SendStart.new(url:, headers:, body:)`: Execute initiation request to establish upload session.
 *   `Instruction::SendChunk.new(url:, offset:, length:, finalize:)`: Transmit buffered chunk of specified `length` starting at `offset`. If `finalize` is true, sends command `upload, finalize`.
 *   `Instruction::SendFinalize.new(url:)`: Send standalone `finalize` command when all data bytes were already acknowledged.
@@ -170,13 +195,14 @@ When `Core` resolves a recovery query or offset realignment, the Driver executes
 2.  **Case 2: Server Offset Behind Buffer (`server_offset < buffer_start_offset`)**
     *   Occurs if the server rolls back beyond the retained buffer window.
     *   If `stream.respond_to?(:seek)`: Driver seeks the stream back to `server_offset`, resets `@buffer = "".b`, and sets `buffer_start_offset = server_offset`.
-    *   If `stream` is unseekable (e.g. Socket, Pipe, STDIN): Driver raises a terminal `UnseekableStreamError` (Category 3 failure).
+    *   If `stream` is unseekable (e.g. Socket, Pipe, STDIN): Driver raises a terminal `UnseekableStreamError` (Category 3 failure), attaching `resume_handle`.
 3.  **Case 3: Server Offset Ahead of Buffer (`server_offset > buffer_end_offset`)**
     *   Occurs when resuming an existing session or when the server processed a previously timed-out request ahead of local state.
+    *   If total `upload_size` is known and `server_offset > upload_size`, Driver raises a terminal `StreamMismatchError` with `resume_handle`.
     *   Driver resets `@buffer = "".b`.
     *   Driver advances the stream to `server_offset`:
         *   If seekable: `stream.seek(server_offset)`.
-        *   If unseekable: Driver reads and discards `server_offset - current_stream_pos` bytes from `stream`.
+        *   If unseekable: Driver reads and discards `server_offset - current_stream_pos` bytes from `stream`. If the stream encounters an unexpected EOF before reaching `server_offset`, Driver raises a terminal `StreamMismatchError` with `resume_handle`.
     *   Driver sets `buffer_start_offset = server_offset`.
 
 ---
@@ -242,6 +268,7 @@ Full implementation: [reference-implementation.md#3-driver-class](reference-impl
 | From State | Event Shape | Event & Input Payload | State Mutations | To State | Emitted Instructions & Parameters |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **`Initializing`** | `:start_upload` | `Event::StartUpload` | `status = :starting` | `Starting` | `Instruction::NotifyProgress.new(progress: Progress.new(phase: :initiating, bytes_uploaded: 0, total_bytes: config.upload_size))`<br/>`Instruction::SendStart.new(url: config.initial_url, headers: config.initial_headers, body: config.initial_body)` |
+| **`Initializing`** | `:resume_upload` | `Event::ResumeUpload` | `upload_url = event.upload_url`<br/>`chunk_size = event.chunk_size`<br/>`offset = 0`<br/>`status = :recovery` | `Recovery` | `Instruction::NotifyProgress.new(progress: Progress.new(phase: :initiating, bytes_uploaded: 0, total_bytes: event.upload_size))`<br/>`Instruction::SendQuery.new(url: event.upload_url)` |
 | **`Starting`** | `:response_active` | `Event::HttpResponse(200, headers, _)` with `Status: active` | `upload_url = headers['X-Goog-Upload-URL']`<br/>`chunk_granularity = headers['...-Granularity']&.to_i`<br/>`chunk_size = resolve(config, chunk_granularity)`<br/>`offset = 0`<br/>`status = :transmission_reading` | `Transmission \| Reading from stream` | `Instruction::NotifyProgress.new(progress: Progress.new(phase: :uploading, bytes_uploaded: 0, total_bytes: config.upload_size))`<br/>`Instruction::FillBuffer.new(target_bytesize: state.chunk_size)` |
 | **`Starting`** | `:response_rejected` | `Event::HttpResponse(non-200, headers, _)` with `Status: final` | `status = :rejected` | `Rejected` | `Instruction::TerminateFailure.new(error: Gapic::Rest::ResumableUpload::UploadRejectedError.from(event))` |
 | **`Starting`** | `:response_cat2` / `:response_fatal_bad_response` | `Event::HttpResponse` (Non-200; see Section 6.1) | `last_error = Gapic::Rest::ResumableUpload::BadResponseError.from(event)`<br/>`status = :error` | `Error` | `Instruction::TerminateFailure.new(error: state.last_error)` |
@@ -286,6 +313,7 @@ Full implementation: [reference-implementation.md#3-driver-class](reference-impl
 stateDiagram-v2
     [*] --> Initializing
     Initializing --> Starting : Event::StartUpload
+    Initializing --> Recovery : Event::ResumeUpload
     Starting --> Transmission_Reading : Event::HttpResponse(200, active)
     
     state Transmission {
@@ -448,11 +476,12 @@ To realign the upload state, the `Driver` processes `Instruction::RealignBuffer(
     *   Upon executing the accompanying `Instruction::FillBuffer(target_bytesize)`, the Driver reads `target_bytesize - @buffer.bytesize` bytes from `stream` to restore `@buffer` to full `chunk_size` before transmitting.
 2.  **Rewind Required (`server_offset < buffer_start_offset`)**:
     *   If `stream.respond_to?(:seek)`: the Driver seeks to `server_offset`, clears `@buffer = "".b`, and sets `buffer_start_offset = server_offset`.
-    *   If `stream` is unseekable (e.g. Socket, Pipe, STDIN): the Driver raises terminal `UnseekableStreamError` (Category 3).
+    *   If `stream` is unseekable (e.g. Socket, Pipe, STDIN): the Driver raises terminal `UnseekableStreamError` (Category 3), attaching `resume_handle`.
 3.  **Fast-Forward Required (`server_offset > buffer_end_offset`)**:
+    *   If total `upload_size` is known and `server_offset > upload_size`: Driver raises terminal `StreamMismatchError` with `resume_handle`.
     *   The Driver clears `@buffer = "".b`.
     *   If `stream.respond_to?(:seek)`: seeks to `server_offset`.
-    *   If unseekable: reads and discards `server_offset - current_stream_pos` bytes from `stream`.
+    *   If unseekable: reads and discards `server_offset - current_stream_pos` bytes from `stream`. If the stream encounters unexpected EOF before reaching `server_offset`, Driver raises terminal `StreamMismatchError` with `resume_handle`.
     *   The Driver sets `buffer_start_offset = server_offset`.
 
 ### 6.3 Sensible Defaults for Global Deadline

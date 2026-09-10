@@ -152,6 +152,8 @@ class RulesClassificationTest < Minitest::Test
   def test_shape_of_control_events
     assert_equal :start_upload, Rules.shape_of(Event::StartUpload.new)
     assert_equal :start_upload, Rules.shape_of(Event::StartUpload)
+    assert_equal :resume_upload, Rules.shape_of(Event::ResumeUpload.new)
+    assert_equal :resume_upload, Rules.shape_of(Event::ResumeUpload)
     assert_equal :user_cancel, Rules.shape_of(Event::Cancel.new)
     assert_equal :user_cancel, Rules.shape_of(Event::Cancel)
     assert_equal :global_deadline_exceeded, Rules.shape_of(Event::GlobalDeadlineExceeded.new)

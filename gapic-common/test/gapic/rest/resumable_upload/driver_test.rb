@@ -108,6 +108,96 @@ class DriverTest < Minitest::Test
     ], progress_records
   end
 
+  def test_resume_upload_success
+    progress_records = []
+    responses = [
+      FakeResponse.new(
+        status:  200,
+        headers: {
+          "X-Goog-Upload-Status"        => "active",
+          "X-Goog-Upload-Size-Received" => "4"
+        },
+        body:    ""
+      ),
+      FakeResponse.new(status: 200, headers: { "X-Goog-Upload-Status" => "active" }, body: ""),
+      FakeResponse.new(status: 200, headers: { "X-Goog-Upload-Status" => "final" }, body: '{"done":true}')
+    ]
+    stub = FakeClientStub.new responses
+    config = ResumeUploadConfig.new(
+      upload_url:    "https://example.com/session/1",
+      chunk_size:    4,
+      stream:        StringIO.new("0123456789"),
+      stream_offset: 0,
+      upload_size:   10,
+      on_progress:   ->(p) { progress_records << p }
+    )
+
+    driver = Driver.new client_stub: stub, config: config
+    result = driver.run
+
+    assert_equal '{"done":true}', result
+    assert_equal 3, stub.requests.size
+    assert_query_request stub.requests[0]
+    assert_chunk_request stub.requests[1], offset: "4", length: "4", body: "4567", finalize: false
+    assert_chunk_request stub.requests[2], offset: "8", length: "2", body: "89", finalize: true
+
+    assert_equal [
+      Progress.new(phase: :initiating, bytes_uploaded: 0, total_bytes: 10),
+      Progress.new(phase: :uploading, bytes_uploaded: 4, total_bytes: 10),
+      Progress.new(phase: :uploading, bytes_uploaded: 8, total_bytes: 10),
+      Progress.new(phase: :finalizing, bytes_uploaded: 8, total_bytes: 10),
+      Progress.new(phase: :completed, bytes_uploaded: 10, total_bytes: 10)
+    ], progress_records
+  end
+
+  def test_resume_upload_with_409_recovery_retry
+    progress_records = []
+    responses = [
+      FakeResponse.new(
+        status:  409,
+        headers: { "X-Goog-Upload-Status" => "active" },
+        body:    "Conflict"
+      ),
+      FakeResponse.new(
+        status:  200,
+        headers: {
+          "X-Goog-Upload-Status"        => "active",
+          "X-Goog-Upload-Size-Received" => "4"
+        },
+        body:    ""
+      ),
+      FakeResponse.new(status: 200, headers: { "X-Goog-Upload-Status" => "active" }, body: ""),
+      FakeResponse.new(status: 200, headers: { "X-Goog-Upload-Status" => "final" }, body: '{"done":true}')
+    ]
+    stub = FakeClientStub.new responses
+    config = ResumeUploadConfig.new(
+      upload_url:    "https://example.com/session/1",
+      chunk_size:    4,
+      stream:        StringIO.new("0123456789"),
+      stream_offset: 0,
+      upload_size:   10,
+      on_progress:   ->(p) { progress_records << p }
+    )
+
+    driver = Driver.new client_stub: stub, config: config
+    result = driver.run
+
+    assert_equal '{"done":true}', result
+    assert_equal 4, stub.requests.size
+    assert_query_request stub.requests[0]
+    assert_query_request stub.requests[1]
+    assert_chunk_request stub.requests[2], offset: "4", length: "4", body: "4567", finalize: false
+    assert_chunk_request stub.requests[3], offset: "8", length: "2", body: "89", finalize: true
+
+    assert_equal [
+      Progress.new(phase: :initiating, bytes_uploaded: 0, total_bytes: 10),
+      Progress.new(phase: :uploading, bytes_uploaded: 4, total_bytes: 10),
+      Progress.new(phase: :uploading, bytes_uploaded: 8, total_bytes: 10),
+      Progress.new(phase: :finalizing, bytes_uploaded: 8, total_bytes: 10),
+      Progress.new(phase: :completed, bytes_uploaded: 10, total_bytes: 10)
+    ], progress_records
+  end
+
   private
 
   def build_scripted_responses

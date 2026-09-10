@@ -32,6 +32,12 @@ module Gapic
 
         ##
         # @private
+        # Signals the resumption of an existing upload session.
+        #
+        ResumeUpload = Data.define
+
+        ##
+        # @private
         # Signals that binary data was read from the stream into the Driver's buffer.
         #
         # @!attribute [r] bytes_buffered

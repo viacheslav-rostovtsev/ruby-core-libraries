@@ -42,6 +42,7 @@ module Gapic
           # @return [Hash<Symbol, Array>]
           LIFECYCLE = {
             start_session:               [:info, "Initiating resumable upload"],
+            resume_session:              [:info, "Resuming upload session"],
             begin_transmission:          [:info, "Upload session established"],
             send_chunk:                  [:debug, "Sending upload chunk"],
             send_upload_finalize:        [:info, "Sending final upload chunk"],
@@ -258,6 +259,11 @@ module Gapic
             case decision.recipe
             when :start_session
               { uploadSize: config.upload_size, requestedChunkSize: config.chunk_size }
+            when :resume_session
+              {
+                uploadUrl: Abridge.url(state.upload_url),
+                chunkSize: state.chunk_size
+              }
             when :begin_transmission
               {
                 effectiveChunkSize: state.chunk_size,
