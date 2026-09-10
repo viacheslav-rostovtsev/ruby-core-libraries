@@ -148,6 +148,14 @@ flowchart TD
   * Unexpected response lacking `X-Goog-Upload-Status` formats header description as `(X-Goog-Upload-Status: missing)`.
 * **Actionable description for non-HTTP unexpected events**:
   * Stream chunk read while in `:starting` raises message stating `"initiating upload session: received unexpected stream chunk read (512 bytes, eof: false)"` with `err.response == nil`.
+* **Resume Handle & Error Metadata (`HasResumeHandle`)**:
+  * `HasResumeHandle` mixin inclusion verified on `BadResponseError`, `DeadlineExceededError`, `UnseekableStreamError`, `InvalidTransitionError`, and `StreamMismatchError`.
+  * `HasResumeHandle` explicitly refuted on terminal dead-session errors (`UploadRejectedError`, `UploadCancelledError`).
+  * `Rules.resume_handle_from`: Returns `nil` when state is `nil` or `upload_url` is `nil`; returns populated `ResumeHandle` with `upload_url` and `chunk_size` when established.
+  * Resumable error suffix: When `resume_handle` is present, uniform suffix `" (upload_session is resumable: see #resume_handle)"` is appended to the message on `DeadlineExceededError`, `BadResponseError`, `InvalidTransitionError`, `UnseekableStreamError`, and `StreamMismatchError`.
+  * Suffix omission: When `resume_handle` is `nil` (e.g. before session creation), error message omits the resumable suffix.
+  * Terminal dead sessions: `UploadRejectedError` and `UploadCancelledError` do not respond to `:resume_handle` and do not include the suffix.
+  * `StreamMismatchError`: Verified with `.new` and `.from`, ensuring `resume_handle` and formatted messages with/without handle.
 
 ---
 
@@ -166,10 +174,13 @@ flowchart TD
   * *Exact end*: `server_offset` at end empties buffer and updates start offset.
 * **Rewind stream**:
   * *Seekable*: Rewinds stream position and resets buffer to target offset.
-  * *Unseekable*: Raises `UnseekableStreamError` with target and current buffer offsets in message.
+  * *Unseekable*: Raises `UnseekableStreamError` with target and current buffer offsets in message. If `upload_url` is established in `Driver#resume_handle`, attaches `resume_handle` and appends the uniform resumable suffix.
 * **Fast-forward stream**:
   * *Seekable*: Seeks stream forward and resets buffer to target offset.
   * *Unseekable*: Reads and discards needed bytes from stream to advance to target offset.
+* **Driver Session Snapshot (`Driver#resume_handle`)**:
+  * Returns `nil` before upload session URL is established.
+  * Returns `ResumeHandle` snapshot during active upload progression.
 
 ---
 

@@ -537,6 +537,17 @@ module Gapic
         end
 
         ##
+        # Extracts a {ResumeHandle} from current protocol state.
+        #
+        # @param state [State] Protocol state
+        # @return [ResumeHandle, nil] Resume handle if upload URL is established, or nil
+        def self.resume_handle_from state
+          return nil if state.nil? || state.upload_url.nil?
+
+          ResumeHandle.new upload_url: state.upload_url, chunk_size: state.chunk_size
+        end
+
+        ##
         # @private
         # Fails upload due to exceeded execution deadline.
         #
@@ -545,7 +556,8 @@ module Gapic
         # @param _config [CompleteUploadConfig] Session configuration
         # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.fail_with_deadline_exceeded state, _event, _config
-          err = DeadlineExceededError.new
+          handle = resume_handle_from state
+          err = DeadlineExceededError.new resume_handle: handle
           next_state = state.with(
             status:           :error,
             in_flight_length: 0,
@@ -581,7 +593,8 @@ module Gapic
         # @param _config [CompleteUploadConfig] Session configuration
         # @return [Array<State, Array<Object>>] Tuple of [next_state, instructions]
         def self.fail_with_bad_response state, event, _config
-          err = BadResponseError.from event
+          handle = resume_handle_from state
+          err = BadResponseError.from event, resume_handle: handle
           next_state = state.with(
             status:           :error,
             in_flight_length: 0,
@@ -622,7 +635,14 @@ module Gapic
           happened = describe_event event, shape
           message = "Resumable upload failed while #{action}: #{happened}."
           response = event.is_a?(Event::HttpResponse) ? event : nil
-          raise InvalidTransitionError.new(message, state: state.status, event: event, response: response)
+          handle = resume_handle_from state
+          raise InvalidTransitionError.new(
+            message,
+            state:         state.status,
+            event:         event,
+            response:      response,
+            resume_handle: handle
+          )
         end
 
         ##

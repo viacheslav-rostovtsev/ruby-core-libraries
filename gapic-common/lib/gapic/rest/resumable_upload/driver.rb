@@ -58,6 +58,15 @@ module Gapic
         attr_reader :upload_id
 
         ##
+        # Returns a {ResumeHandle} representing the current upload session parameters.
+        # Reading this property mid-run provides a best-effort snapshot of the current session state.
+        #
+        # @return [ResumeHandle, nil] Resume handle if upload URL is established, or nil
+        def resume_handle
+          Rules.resume_handle_from @core.state
+        end
+
+        ##
         # Initializes a new Resumable Upload Driver.
         #
         # @param client_stub [Gapic::Rest::ClientStub] Underlying REST client stub
@@ -336,8 +345,10 @@ module Gapic
         #
         def realign_rewind_stream server_offset
           unless @config.stream.respond_to? :seek
-            raise UnseekableStreamError,
-                  "Cannot rewind unseekable stream to offset #{server_offset} (buffered from #{@buffer_start_offset})"
+            raise UnseekableStreamError.new(
+              "Cannot rewind unseekable stream to offset #{server_offset} (buffered from #{@buffer_start_offset})",
+              resume_handle: resume_handle
+            )
           end
 
           @config.stream.seek server_offset

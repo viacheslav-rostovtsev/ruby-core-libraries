@@ -158,6 +158,34 @@ module Gapic
       Progress::PHASES = [:initiating, :uploading, :recovering, :finalizing, :cancelling, :completed].freeze
 
       ##
+      # Immutable handle containing parameters necessary to resume an in-progress upload session.
+      # These parameters are provided by the server and can be persisted to resume the upload
+      # at a later time.
+      #
+      # @!attribute [r] upload_url
+      #   @return [String] Upload session URL provided by the server
+      # @!attribute [r] chunk_size
+      #   @return [Integer] Effective chunk size in bytes
+      #
+      ResumeHandle = Data.define(
+        :upload_url,
+        :chunk_size
+      ) do
+        ##
+        # Initializes a new resume handle.
+        #
+        # @param upload_url [String] Upload session URL provided by the server
+        # @param chunk_size [Integer] Effective chunk size in bytes
+        #
+        def initialize upload_url:, chunk_size:
+          super(
+            upload_url: upload_url,
+            chunk_size: chunk_size
+          )
+        end
+      end
+
+      ##
       # @private
       # Immutable state snapshot representing the current protocol progression.
       #

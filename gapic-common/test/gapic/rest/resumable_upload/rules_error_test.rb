@@ -282,5 +282,135 @@ class RulesErrorTest < Minitest::Test
 
     assert_operator UploadRejectedError, :<, Gapic::Rest::Error
     assert_operator BadResponseError, :<, Gapic::Rest::Error
+
+    assert_operator StreamMismatchError, :<, Gapic::Common::Error
+    assert_operator HasResumeHandle, :===, BadResponseError.new
+    assert_operator HasResumeHandle, :===, DeadlineExceededError.new
+    assert_operator HasResumeHandle, :===, UnseekableStreamError.new
+    assert_operator HasResumeHandle, :===, InvalidTransitionError.new("invalid")
+    assert_operator HasResumeHandle, :===, StreamMismatchError.new
+    refute_operator HasResumeHandle, :===, UploadRejectedError.new
+    refute_operator HasResumeHandle, :===, UploadCancelledError.new
+  end
+
+  def test_rules_resume_handle_from
+    assert_nil Rules.resume_handle_from(nil)
+    assert_nil Rules.resume_handle_from(State.new(status: :starting, upload_url: nil))
+
+    state = State.new status: :transmission_sending, upload_url: "https://upload.example.com/id123", chunk_size: 1024
+    handle = Rules.resume_handle_from state
+    refute_nil handle
+    assert_equal "https://upload.example.com/id123", handle.upload_url
+    assert_equal 1024, handle.chunk_size
+  end
+
+  def test_resume_handle_present_on_errors_when_upload_url_set
+    state = State.new(
+      status:     :transmission_sending,
+      upload_url: "https://upload.example.com/session_abc",
+      chunk_size: 512
+    )
+
+    # 1. Deadline exceeded
+    next_state, = Rules.step state, Event::GlobalDeadlineExceeded.new, @config
+    assert_equal :error, next_state.status
+    deadline_err = next_state.last_error
+    assert_instance_of DeadlineExceededError, deadline_err
+    refute_nil deadline_err.resume_handle
+    assert_equal "https://upload.example.com/session_abc", deadline_err.resume_handle.upload_url
+    assert_equal 512, deadline_err.resume_handle.chunk_size
+    assert_includes deadline_err.message, "(upload_session is resumable: see #resume_handle)"
+
+    # 2. Bad response
+    resp = Event::HttpResponse.new status: 401, headers: {}, body: "Fatal 401"
+    next_state, = Rules.step state, resp, @config
+    assert_equal :error, next_state.status
+    bad_resp_err = next_state.last_error
+    assert_instance_of BadResponseError, bad_resp_err
+    refute_nil bad_resp_err.resume_handle
+    assert_equal "https://upload.example.com/session_abc", bad_resp_err.resume_handle.upload_url
+    assert_equal 512, bad_resp_err.resume_handle.chunk_size
+    assert_includes bad_resp_err.message, "(upload_session is resumable: see #resume_handle)"
+
+    # 3. Unmatched transition
+    unmatched_err = assert_raises InvalidTransitionError do
+      Rules.step state, Object.new, @config
+    end
+    refute_nil unmatched_err.resume_handle
+    assert_equal "https://upload.example.com/session_abc", unmatched_err.resume_handle.upload_url
+    assert_equal 512, unmatched_err.resume_handle.chunk_size
+    assert_includes unmatched_err.message, "(upload_session is resumable: see #resume_handle)"
+  end
+
+  def test_resume_handle_nil_on_errors_before_session_created
+    state = State.new status: :starting, upload_url: nil
+
+    # 1. Deadline exceeded before session creation
+    next_state, = Rules.step state, Event::GlobalDeadlineExceeded.new, @config
+    assert_equal :error, next_state.status
+    deadline_err = next_state.last_error
+    assert_nil deadline_err.resume_handle
+    refute_includes deadline_err.message, "(upload_session is resumable: see #resume_handle)"
+
+    # 2. Bad response before session creation
+    resp = Event::HttpResponse.new status: 503, headers: {}, body: "Init failed"
+    next_state, = Rules.step state, resp, @config
+    assert_equal :error, next_state.status
+    bad_resp_err = next_state.last_error
+    assert_nil bad_resp_err.resume_handle
+    refute_includes bad_resp_err.message, "(upload_session is resumable: see #resume_handle)"
+
+    # 3. Unmatched transition before session creation
+    unmatched_err = assert_raises InvalidTransitionError do
+      Rules.step state, Object.new, @config
+    end
+    assert_nil unmatched_err.resume_handle
+    refute_includes unmatched_err.message, "(upload_session is resumable: see #resume_handle)"
+  end
+
+  def test_resume_handle_absent_on_rejected_and_cancelled
+    state = State.new(
+      status:     :transmission_sending,
+      upload_url: "https://upload.example.com/session_abc",
+      chunk_size: 512
+    )
+
+    # 1. Rejected error
+    rejected_resp = Event::HttpResponse.new status: 403, headers: { "x-goog-upload-status" => "final" },
+                                           body: "Access Denied"
+    next_state, = Rules.step state, rejected_resp, @config
+    assert_equal :rejected, next_state.status
+    rejected_err = next_state.last_error
+    assert_instance_of UploadRejectedError, rejected_err
+    refute_respond_to rejected_err, :resume_handle
+    refute_includes rejected_err.message, "(upload_session is resumable: see #resume_handle)"
+
+    # 2. Cancelled error
+    cancelling_state = state.with status: :cancelling
+    cancelled_resp = Event::HttpResponse.new status: 200, headers: { "x-goog-upload-status" => "cancelled" },
+                                            body: ""
+    next_state, = Rules.step cancelling_state, cancelled_resp, @config
+    assert_equal :cancelled, next_state.status
+    cancelled_err = next_state.last_error
+    assert_instance_of UploadCancelledError, cancelled_err
+    refute_respond_to cancelled_err, :resume_handle
+    refute_includes cancelled_err.message, "(upload_session is resumable: see #resume_handle)"
+  end
+
+  def test_stream_mismatch_error_behavior
+    handle = ResumeHandle.new upload_url: "https://upload.example.com/resume", chunk_size: 256
+    err_with_handle = StreamMismatchError.new "Stream too short", resume_handle: handle
+
+    assert_instance_of StreamMismatchError, err_with_handle
+    assert_equal handle, err_with_handle.resume_handle
+    assert_equal "Stream too short (upload_session is resumable: see #resume_handle)", err_with_handle.message
+
+    err_from = StreamMismatchError.from "Stream corrupted", resume_handle: handle
+    assert_equal handle, err_from.resume_handle
+    assert_equal "Stream corrupted (upload_session is resumable: see #resume_handle)", err_from.message
+
+    err_without_handle = StreamMismatchError.new "No handle"
+    assert_nil err_without_handle.resume_handle
+    assert_equal "No handle", err_without_handle.message
   end
 end

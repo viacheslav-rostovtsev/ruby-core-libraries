@@ -198,6 +198,45 @@ class DriverBufferTest < Minitest::Test
 
     assert_includes err.message, "offset 500"
     assert_includes err.message, "buffered from 1000"
+    assert_nil err.resume_handle
+    refute_includes err.message, "(upload_session is resumable: see #resume_handle)"
+  end
+
+  def test_realign_buffer_rewind_unseekable_stream_with_resume_handle
+    stream = UnseekableStream.new "0123456789" * 100
+    driver = build_driver stream: stream
+    driver.core.instance_variable_set(
+      :@state,
+      driver.core.state.with(status: :recovery, upload_url: "https://upload.example.com/session_1", chunk_size: 256)
+    )
+    driver.instance_variable_set :@buffer_start_offset, 1000
+    driver.instance_variable_set :@buffer, "buffered".b
+
+    err = assert_raises UnseekableStreamError do
+      driver.send :execute_realign_buffer, Instruction::RealignBuffer.new(server_offset: 500)
+    end
+
+    refute_nil err.resume_handle
+    assert_equal "https://upload.example.com/session_1", err.resume_handle.upload_url
+    assert_equal 256, err.resume_handle.chunk_size
+    assert_includes err.message, "offset 500"
+    assert_includes err.message, "buffered from 1000"
+    assert_includes err.message, "(upload_session is resumable: see #resume_handle)"
+  end
+
+  def test_driver_resume_handle_property
+    stream = StringIO.new "test"
+    driver = build_driver stream: stream
+    assert_nil driver.resume_handle
+
+    driver.core.instance_variable_set(
+      :@state,
+      driver.core.state.with(upload_url: "https://upload.example.com/session_2", chunk_size: 512)
+    )
+    handle = driver.resume_handle
+    refute_nil handle
+    assert_equal "https://upload.example.com/session_2", handle.upload_url
+    assert_equal 512, handle.chunk_size
   end
 
   # ============================================================================

@@ -116,4 +116,18 @@ class DataTypesTest < Minitest::Test
       Progress.new phase: :invalid_phase, bytes_uploaded: 512, total_bytes: 2048
     end
   end
+
+  def test_resume_handle_instantiation
+    handle = ResumeHandle.new upload_url: "https://upload.example.com/session123", chunk_size: 1_048_576
+    assert_equal "https://upload.example.com/session123", handle.upload_url
+    assert_equal 1_048_576, handle.chunk_size
+
+    assert_raises ArgumentError do
+      ResumeHandle.new upload_url: "https://upload.example.com/session123"
+    end
+
+    assert_raises NoMethodError do
+      handle.upload_url = "https://mutated.com"
+    end
+  end
 end

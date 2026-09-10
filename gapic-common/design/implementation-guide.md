@@ -22,6 +22,8 @@ The `Driver` executes all operations with side-effects. It interacts with HTTP t
 
 Crucially, the Driver delegates all **Category 1 (Transient)** transport retries directly to `Gapic::Common::RetryPolicy`. Transient retries occur entirely within the Driver's network execution wrapper. The `Core` state machine is never exposed to transient noise, receiving only verified successful HTTP responses or terminal transport exceptions.
 
+The Driver also exposes `Driver#resume_handle`, returning a `ResumeHandle` (or `nil` if initiation has not established an upload URL). Reading this property mid-run provides a best-effort snapshot of current session parameters.
+
 ### 1.2 Core (State Container)
 The `Core` maintains the immutable `State` snapshot. When `Core#dispatch(event)` is invoked by the Driver, Core forwards `@state`, the event, and static configuration to `Rules.decide`. Core mutates `@state` to `decision.next_state`, records the decision in `@last_decision`, and returns `decision.instructions` back to the Driver. Core contains zero protocol branching logic and zero side effects.
 
@@ -104,7 +106,22 @@ module Gapic
 end
 ```
 
-### 2.3 Events Vocabulary (Driver -> Core)
+### 2.3 Resume Handle (`ResumeHandle`)
+```ruby
+module Gapic
+  module Rest
+    module ResumableUpload
+      ResumeHandle = Data.define(
+        :upload_url, # [String] Upload session URL provided by the server
+        :chunk_size  # [Integer] Effective chunk size in bytes
+      )
+    end
+  end
+end
+```
+`ResumeHandle` captures server-provided parameters that can be persisted to resume the upload session at a later time.
+
+### 2.4 Events Vocabulary (Driver -> Core)
 *   `Event::StartUpload`: Start the upload session.
 *   `Event::ChunkRead.new(bytes_buffered:, eof:)`: Binary data buffered in Driver memory; reports total bytes ready in buffer and whether the stream hit EOF.
 *   `Event::HttpResponse.new(status:, headers:, body:, error: nil)`: Dispatched for any completed HTTP exchange over the wire (including 2xx, 4xx, 5xx, or responses with missing/unexpected headers). Carries optional parsed `error` (`Gapic::Rest::Error`) when rescued from transport errors. `Core` inspects status and headers to determine protocol progression or recovery.
@@ -115,7 +132,7 @@ end
 *   `Event::Cancel`: Caller requested session cancellation.
 *   `Event::GlobalDeadlineExceeded`: Absolute monotonic clock exceeded the session deadline (`@deadline`) computed at the start of `Driver#run`.
 
-### 2.4 Instructions Vocabulary (Core -> Driver)
+### 2.5 Instructions Vocabulary (Core -> Driver)
 *   `Instruction::SendStart.new(url:, headers:, body:)`: Execute initiation request to establish upload session.
 *   `Instruction::SendChunk.new(url:, offset:, length:, finalize:)`: Transmit buffered chunk of specified `length` starting at `offset`. If `finalize` is true, sends command `upload, finalize`.
 *   `Instruction::SendFinalize.new(url:)`: Send standalone `finalize` command when all data bytes were already acknowledged.
@@ -399,10 +416,16 @@ The implementation distinguishes three categories of network and protocol-level 
 #### 6.1.4 Actionable Terminal Errors & Metadata Propagation
 Terminal errors provide actionable context so downstream SDK callers can inspect error metadata:
 *   **Error Classes**:
-    *   `BadResponseError < Gapic::Rest::Error`: Unrecoverable non-2xx HTTP responses or invalid payloads. Retains `attr_reader :response_body` returning `event.body`.
-    *   `UploadRejectedError < Gapic::Rest::Error`: Backend explicitly rejected the session with `X-Goog-Upload-Status: final`. Retains `attr_reader :response_body` returning `event.body`.
-    *   `UploadCancelledError < Gapic::Common::Error`: Upload session cancelled by caller.
-    *   `DeadlineExceededError < Gapic::Common::Error`: Upload deadline exceeded with optional root cause (`attr_reader :root_cause`).
+    *   `BadResponseError < Gapic::Rest::Error`: Unrecoverable non-2xx HTTP responses or invalid payloads. Retains `attr_reader :response_body` returning `event.body`, and includes `HasResumeHandle`.
+    *   `UploadRejectedError < Gapic::Rest::Error`: Backend explicitly rejected the session with `X-Goog-Upload-Status: final`. Retains `attr_reader :response_body` returning `event.body`. Does NOT include `HasResumeHandle` (session is terminated permanently).
+    *   `UploadCancelledError < Gapic::Common::Error`: Upload session cancelled by caller. Does NOT include `HasResumeHandle` (session is terminated permanently).
+    *   `DeadlineExceededError < Gapic::Common::Error`: Upload deadline exceeded with optional root cause (`attr_reader :root_cause`), and includes `HasResumeHandle`.
+    *   `UnseekableStreamError < Gapic::Common::Error`: Stream rewind required on an unseekable stream; includes `HasResumeHandle`.
+    *   `InvalidTransitionError < Gapic::Common::Error`: Unexpected event dispatched for state; includes `HasResumeHandle`.
+    *   `StreamMismatchError < Gapic::Common::Error`: Stream content or length does not match resumed upload specifications; includes `HasResumeHandle`.
+*   **Resume Handle Propagation (`HasResumeHandle`)**:
+    *   The `HasResumeHandle` mixin exposes `attr_reader :resume_handle` returning a `ResumeHandle` (or `nil` if session initiation was incomplete).
+    *   Whenever `resume_handle` is non-nil, the uniform suffix `" (upload_session is resumable: see #resume_handle)"` is automatically appended to the error message.
 *   **Metadata Sourcing & De-prefixing**:
     *   When `event.error` is present (from `Gapic::Rest::Error.wrap_faraday_error`), factories source `status_code`, `status`, `details`/`status_details`, and `headers`/`header`.
     *   The prefix literal `Gapic::Rest::Error::REST_ERROR_PREFIX` (`"An error has occurred when making a REST request"`) is stripped from `event.error.message` to avoid redundant prefixes.

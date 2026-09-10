@@ -142,6 +142,36 @@ module Gapic
       end
 
       ##
+      # Mixin providing {ResumeHandle} access and uniform formatting for resumable errors.
+      #
+      # @!attribute [r] resume_handle
+      #   @return [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated upload session resume handle
+      #
+      module HasResumeHandle
+        # @return [Gapic::Rest::ResumableUpload::ResumeHandle, nil]
+        attr_reader :resume_handle
+
+        ##
+        # Suffix appended to error message when a resume handle is present.
+        # @return [String]
+        RESUMABLE_SUFFIX = " (upload_session is resumable: see #resume_handle)"
+
+        ##
+        # Appends the uniform resumable suffix if resume_handle is non-nil.
+        #
+        # @param message [String, nil] Error message
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Resume handle
+        # @return [String, nil]
+        def self.append_suffix message, resume_handle
+          return message if resume_handle.nil?
+          return RESUMABLE_SUFFIX.strip if message.nil? || message.to_s.strip.empty?
+          return message if message.end_with? RESUMABLE_SUFFIX
+
+          "#{message}#{RESUMABLE_SUFFIX}"
+        end
+      end
+
+      ##
       # Raised when an invalid or unmatched event is dispatched for the current protocol state.
       #
       # @!attribute [r] response
@@ -150,8 +180,12 @@ module Gapic
       #   @return [Symbol, nil] Current protocol state
       # @!attribute [r] event
       #   @return [Object, nil] Received event
+      # @!attribute [r] resume_handle
+      #   @return [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
       #
       class InvalidTransitionError < Gapic::Common::Error
+        include HasResumeHandle
+
         # @return [Gapic::Rest::ResumableUpload::Event::HttpResponse, Object, nil]
         attr_reader :response
 
@@ -168,18 +202,94 @@ module Gapic
         # @param state [Symbol, nil] Current protocol state
         # @param event [Object, nil] Received event
         # @param response [Gapic::Rest::ResumableUpload::Event::HttpResponse, Object, nil] Associated HTTP response
-        def initialize message, state: nil, event: nil, response: nil
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+        def initialize message, state: nil, event: nil, response: nil, resume_handle: nil
           @state = state
           @event = event
           @response = response || (event if defined?(Event::HttpResponse) && event.is_a?(Event::HttpResponse))
-          super message
+          @resume_handle = resume_handle
+          super HasResumeHandle.append_suffix(message, resume_handle)
+        end
+
+        ##
+        # Creates an InvalidTransitionError from an event.
+        #
+        # @param event [Object] Received event
+        # @param state [Symbol, nil] Current protocol state
+        # @param message [String, nil] Descriptive error message
+        # @param response [Object, nil] Associated HTTP response
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+        # @return [InvalidTransitionError]
+        def self.from event, state: nil, message: nil, response: nil, resume_handle: nil
+          new(
+            message || "Invalid transition for event #{event.inspect}",
+            state:         state,
+            event:         event,
+            response:      response,
+            resume_handle: resume_handle
+          )
         end
       end
 
       ##
       # Raised when stream rewinding is required but the stream does not support seeking.
       #
+      # @!attribute [r] resume_handle
+      #   @return [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+      #
       class UnseekableStreamError < Gapic::Common::Error
+        include HasResumeHandle
+
+        ##
+        # Initializes a new UnseekableStreamError.
+        #
+        # @param message [String, nil] Descriptive error message
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+        def initialize message = nil, resume_handle: nil
+          @resume_handle = resume_handle
+          super HasResumeHandle.append_suffix(message, resume_handle)
+        end
+
+        ##
+        # Creates an UnseekableStreamError with optional resume handle.
+        #
+        # @param message [String, nil] Descriptive error message
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+        # @return [UnseekableStreamError]
+        def self.from message = nil, resume_handle: nil
+          new message, resume_handle: resume_handle
+        end
+      end
+
+      ##
+      # Raised when stream content or length does not match resumed upload specifications.
+      #
+      # @!attribute [r] resume_handle
+      #   @return [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+      #
+      class StreamMismatchError < Gapic::Common::Error
+        include HasResumeHandle
+
+        ##
+        # Initializes a new StreamMismatchError.
+        #
+        # @param message [String] Error message
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+        def initialize message = "Stream content or length does not match resumed upload", resume_handle: nil
+          @resume_handle = resume_handle
+          super HasResumeHandle.append_suffix(message, resume_handle)
+        end
+
+        ##
+        # Creates a StreamMismatchError with optional resume handle.
+        #
+        # @param message [String, nil] Error message
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+        # @return [StreamMismatchError]
+        def self.from message = nil, resume_handle: nil
+          msg = message || "Stream content or length does not match resumed upload"
+          new msg, resume_handle: resume_handle
+        end
       end
 
       ##
@@ -187,8 +297,12 @@ module Gapic
       #
       # @!attribute [r] response_body
       #   @return [String, nil] Response body from backend
+      # @!attribute [r] resume_handle
+      #   @return [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
       #
       class BadResponseError < Gapic::Rest::Error
+        include HasResumeHandle
+
         # @return [String, nil] Response body from backend
         attr_reader :response_body
 
@@ -201,9 +315,13 @@ module Gapic
         # @param details [Object, nil] Error details
         # @param headers [Object, nil] Response headers
         # @param response_body [String, nil] Response body
-        def initialize message = nil, status_code = nil, status: nil, details: nil, headers: nil, response_body: nil
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+        def initialize message = nil, status_code = nil, status: nil, details: nil, headers: nil,
+                       response_body: nil, resume_handle: nil
           @response_body = response_body
-          super message, status_code, status: status, details: details, headers: headers
+          @resume_handle = resume_handle
+          super HasResumeHandle.append_suffix(message, resume_handle),
+                status_code, status: status, details: details, headers: headers
         end
 
         ##
@@ -211,11 +329,13 @@ module Gapic
         #
         # @param event [Object] HTTP response event
         # @param response_body [String, nil] Optional response body override
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Optional resume handle
         # @return [BadResponseError]
-        def self.from event, response_body: nil
+        def self.from event, response_body: nil, resume_handle: nil
           body = response_body || (event.respond_to?(:body) ? event.body : nil)
           message, status_code, status, details, headers = ErrorBuilder.build_attributes event
-          new message, status_code, status: status, details: details, headers: headers, response_body: body
+          new message, status_code, status: status, details: details, headers: headers,
+              response_body: body, resume_handle: resume_handle
         end
       end
 
@@ -289,8 +409,12 @@ module Gapic
       #
       # @!attribute [r] root_cause
       #   @return [Object, nil] Root cause exception if deadline exceeded during a retry loop
+      # @!attribute [r] resume_handle
+      #   @return [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
       #
       class DeadlineExceededError < Gapic::Common::Error
+        include HasResumeHandle
+
         # @return [Object, nil] Root cause exception if deadline exceeded during a retry loop
         attr_reader :root_cause
 
@@ -299,9 +423,22 @@ module Gapic
         #
         # @param message [String] Deadline exceeded message
         # @param root_cause [Object, nil] Root cause exception
-        def initialize message = "Upload deadline exceeded", root_cause: nil
-          super message
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+        def initialize message = "Upload deadline exceeded", root_cause: nil, resume_handle: nil
+          super HasResumeHandle.append_suffix(message, resume_handle)
           @root_cause = root_cause
+          @resume_handle = resume_handle
+        end
+
+        ##
+        # Creates a DeadlineExceededError with optional resume handle.
+        #
+        # @param message [String, nil] Deadline exceeded message
+        # @param root_cause [Object, nil] Root cause exception
+        # @param resume_handle [Gapic::Rest::ResumableUpload::ResumeHandle, nil] Associated resume handle
+        # @return [DeadlineExceededError]
+        def self.from message = "Upload deadline exceeded", root_cause: nil, resume_handle: nil
+          new message, root_cause: root_cause, resume_handle: resume_handle
         end
       end
     end
