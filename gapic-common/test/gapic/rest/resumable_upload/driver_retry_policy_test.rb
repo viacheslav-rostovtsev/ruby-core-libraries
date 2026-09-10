@@ -126,6 +126,10 @@ class DriverRetryPolicyTest < Minitest::Test
       response_double = OpenStruct.new status: code, headers: {}
       refute RetryPolicies::START_PREDICATE.call(response_double),
              "Expected START_PREDICATE to return false for fatal status #{code}"
+
+      gapic_err = Gapic::Rest::Error.new "Error", code, status: "FATAL_ERROR", headers: {}
+      refute RetryPolicies::START_PREDICATE.call(gapic_err),
+             "Expected START_PREDICATE to return false for Gapic::Rest::Error with fatal status #{code}"
     end
   end
 

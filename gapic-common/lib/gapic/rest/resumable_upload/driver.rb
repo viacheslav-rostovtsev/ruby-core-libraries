@@ -313,9 +313,14 @@ module Gapic
                                        headers: event.headers
             can_retry = policy.send(:retry_with_deadline?) && policy.call(event)
             unless can_retry
-              failed_event = Event::RequestFailed.new kind: :retries_exhausted, message: err.message, source_error: err
-              @upload_log.wire_failure failed_event
-              return failed_event
+              if event.status == 200
+                failed_event = Event::RequestFailed.new(
+                  kind: :retries_exhausted, message: err.message, source_error: err
+                )
+                @upload_log.wire_failure failed_event
+                return failed_event
+              end
+              return event
             end
             attempt += 1
           end

@@ -192,10 +192,10 @@ Tests Category 1 transient transport retries and Category 2 protocol recovery wo
 
 ### 2.4 Error on Start Suite (`integration/resumable_upload/error_on_start_test.rb`)
 
-Tests non-fatal transient retries, missing status headers, retry exhaustion, fatal errors, and session isolation during the session initiation (`start`) phase. Uses a 100-byte payload and SDK default retry policies.
+Tests non-fatal transient retries, missing status headers, retry exhaustion, fatal errors, and session isolation during the session initiation (`start`) phase. Uses a 100-byte payload, configuring `FAST_RETRY` for non-exhaustion retry cases to minimize test execution latency while retaining default policies for exhaustion and fatal checks.
 
 #### Case 1. Non-fatal transient error on start (`test_non_fatal_error_on_start_503`)
-* **Scenario**: Injects a single `503 Service Unavailable` on the initial `start` request (`scenario: "non_fatal_error_on_start"`, `error_code: 503, failure_count: 1`).
+* **Scenario**: Injects a single `503 Service Unavailable` on the initial `start` request (`scenario: "non_fatal_error_on_start"`, `error_code: 503, failure_count: 1`, `start_retry_policy: FAST_RETRY`).
 * **Protocol Flow**:
   1. First `start` POST request receives `503`.
   2. `start_retry_policy` transparently retries the initiation request.
@@ -207,7 +207,7 @@ Tests non-fatal transient retries, missing status headers, retry exhaustion, fat
   * `phases.last == :completed`.
 
 #### Case 2. Missing status header / 400 on start (`test_missing_header_retriable_on_start_400`)
-* **Scenario**: Injects a single `400 Bad Request` without an `X-Goog-Upload-Status` header on `start` (`scenario: "non_fatal_error_on_start"`, `error_code: 400, failure_count: 1`).
+* **Scenario**: Injects a single `400 Bad Request` without an `X-Goog-Upload-Status` header on `start` (`scenario: "non_fatal_error_on_start"`, `error_code: 400, failure_count: 1`, `start_retry_policy: FAST_RETRY`).
 * **Protocol Flow**:
   1. First `start` POST request receives `400` with no upload status header.
   2. `START_PREDICATE` identifies the missing status header on start as retriable (for non-fatal status codes) and retries the initiation request.
@@ -219,14 +219,14 @@ Tests non-fatal transient retries, missing status headers, retry exhaustion, fat
   * `phases.last == :completed`.
 
 #### Case 3. Retry exhaustion and session deadline on start (`test_retry_exhaustion_on_start_times_out`)
-* **Scenario**: Injects repeated `503 Service Unavailable` responses (`failure_count: 10_000`) with a 3-second session `timeout` (`scenario: "non_fatal_error_on_start"`).
+* **Scenario**: Injects repeated `503 Service Unavailable` responses (`failure_count: 10_000`) with default start retry policy and a 3-second session `timeout` (`scenario: "non_fatal_error_on_start"`).
 * **Protocol Flow**:
   1. `start` command encounters continuous 503 errors.
-  2. Client retries with exponential backoff until the 3-second global session deadline expires.
+  2. Client retries with default exponential backoff until the 3-second global session deadline expires.
   3. Client terminates failure before entering transmission.
 * **Assertions**:
   * Raises a `Gapic::Common::Error` (`BadResponseError` or `DeadlineExceededError`).
-  * Total elapsed time is close to 3 seconds (`2.5s <= elapsed <= 4.5s`).
+  * Total elapsed time is close to 3 seconds (`2.5s <= elapsed <= 6.0s`, accounting for default backoff delays and network latency).
   * `phases` contains no `:uploading` entries (`refute_includes phases, :uploading`).
 
 #### Case 4. Fatal errors on start (`test_fatal_error_on_start_raises_bad_response_immediately`)
@@ -243,7 +243,7 @@ Tests non-fatal transient retries, missing status headers, retry exhaustion, fat
   * Refutes any `:uploading` phases.
 
 #### Case 5. Sequential session isolation (`test_sequential_runs_session_isolation`)
-* **Scenario**: Executes two sequential upload runs under Case 1 (`non_fatal_error_on_start`, 503, failure_count: 1) with distinct client UUIDs.
+* **Scenario**: Executes two sequential upload runs under Case 1 (`non_fatal_error_on_start`, 503, failure_count: 1, `start_retry_policy: FAST_RETRY`) with distinct client UUIDs.
 * **Protocol Flow**:
   1. First run executes and succeeds.
   2. Second run executes with a newly generated `client_uuid` and independent progress tracking.

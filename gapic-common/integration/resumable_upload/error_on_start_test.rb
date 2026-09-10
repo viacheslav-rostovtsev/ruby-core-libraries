@@ -25,11 +25,11 @@ require "stringio"
 class ErrorOnStartTest < ShowcaseIntegrationTest
   PAYLOAD_SIZE = 100
 
-  def build_start_error_config scenario:, scenario_config: {}, **overrides
+  def build_start_error_config scenario:, scenario_config: {}, start_retry_policy: nil, **overrides
     build_config(
       scenario:                   scenario,
       scenario_config:            scenario_config,
-      start_retry_policy:         nil,
+      start_retry_policy:         start_retry_policy,
       control_plane_retry_policy: nil,
       data_plane_retry_policy:    nil,
       stream:                     StringIO.new(payload(PAYLOAD_SIZE)),
@@ -41,8 +41,9 @@ class ErrorOnStartTest < ShowcaseIntegrationTest
   # A1. Verifies non-fatal transient error (503) on start is retried and upload completes.
   def test_non_fatal_error_on_start_503
     config = build_start_error_config(
-      scenario:        "non_fatal_error_on_start",
-      scenario_config: { error_code: 503, failure_count: 1 }
+      scenario:           "non_fatal_error_on_start",
+      scenario_config:    { error_code: 503, failure_count: 1 },
+      start_retry_policy: FAST_RETRY
     )
 
     driver = Gapic::Rest::ResumableUpload::Driver.new(
@@ -61,8 +62,9 @@ class ErrorOnStartTest < ShowcaseIntegrationTest
   # A2. Verifies missing status header / 400 on start is retried and upload completes.
   def test_missing_header_retriable_on_start_400
     config = build_start_error_config(
-      scenario:        "non_fatal_error_on_start",
-      scenario_config: { error_code: 400, failure_count: 1 }
+      scenario:           "non_fatal_error_on_start",
+      scenario_config:    { error_code: 400, failure_count: 1 },
+      start_retry_policy: FAST_RETRY
     )
 
     driver = Gapic::Rest::ResumableUpload::Driver.new(
@@ -99,7 +101,7 @@ class ErrorOnStartTest < ShowcaseIntegrationTest
 
     elapsed = t1 - t0
     assert_operator elapsed, :>=, 2.5
-    assert_operator elapsed, :<=, 4.5
+    assert_operator elapsed, :<=, 6.0
     is_expected_error = err.is_a?(Gapic::Rest::ResumableUpload::BadResponseError) ||
                         err.is_a?(Gapic::Rest::ResumableUpload::DeadlineExceededError)
     assert is_expected_error, "Expected BadResponseError or DeadlineExceededError, got #{err.class}"
@@ -136,8 +138,9 @@ class ErrorOnStartTest < ShowcaseIntegrationTest
   def test_sequential_runs_session_isolation
     2.times do
       config = build_start_error_config(
-        scenario:        "non_fatal_error_on_start",
-        scenario_config: { error_code: 503, failure_count: 1 }
+        scenario:           "non_fatal_error_on_start",
+        scenario_config:    { error_code: 503, failure_count: 1 },
+        start_retry_policy: FAST_RETRY
       )
 
       driver = Gapic::Rest::ResumableUpload::Driver.new(

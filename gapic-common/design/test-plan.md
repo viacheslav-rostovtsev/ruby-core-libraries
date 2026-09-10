@@ -189,15 +189,16 @@ flowchart TD
 
 ---
 
-### 3.5 Retry Policies & Header Extraction (`retry_policies_test.rb`)
+### 3.5 Retry Policies & Extraction (`retry_policies_test.rb`, `driver_retry_policy_test.rb`)
 
-#### A. Header Extraction (`RetryPolicies.extract_headers`)
-* Extracts from `#headers`, `#response_headers`, and Faraday `#response[:headers]`. Returns `nil` when no headers present.
+#### A. Header & Status Extraction (`RetryPolicies.extract_headers`, `RetryPolicies.extract_status_code`)
+* `extract_headers`: Extracts from `#headers`, `#response_headers`, and Faraday `#response[:headers]`. Returns `nil` when no headers present.
+* `extract_status_code`: Extracts integer status from `#status_code`, Faraday `#response[:status]`, `#response_status`, and `#status`.
 
 #### B. $3 \times 3$ Policy Matrix (`policy.retry_error?`)
 | Policy | Headers Present, NO Upload-Status | Headers Present, WITH Upload-Status | NO Headers |
 | :--- | :--- | :--- | :--- |
-| **`default_start`** | **Retried unconditionally** (`true`) across 503, 400, 200, empty string header, and no error code. | **Falls back to codes**: retries 503; refutes 400 and no code. | **Falls back to codes**: retries 503; refutes 400 and no code. |
+| **`default_start`** | **Retried for non-fatal** (`true` across 503, 400, 200, empty string header); **Refuted** (`false`) for fatal status codes (401, 403, 404, 405, 410, 413, 415) across response doubles and `Gapic::Rest::Error`. | **Falls back to codes**: retries 503; refutes 400 and no code. | **Falls back to codes**: retries 503; refutes 400 and no code. |
 | **`default_control_plane`** | **Falls back to codes**: retries 503; refutes 400 and no code. | **Falls back to codes**: retries 503; refutes 400 and no code. | **Falls back to codes**: retries 503; refutes 400 and no code. |
 | **`default_data_plane`** | **Unretriable** (`false`) across 503, 400, empty string header, and no code (triggers Cat 2 recovery). | **Falls back to codes**: retries 503; refutes 400 and no code. | **Falls back to codes**: retries 503; refutes 400 and no code. |
 
@@ -222,7 +223,8 @@ flowchart TD
 ### 3.8 Driver Initiation & Query Retries (`driver_retry_test.rb`)
 
 * **Session initiation retry loop**: Missing status header on HTTP 200 during `start` triggers `start_retry_policy` and succeeds upon header arrival.
-* **Initiation retry exhaustion**: Continuous missing status headers on `start` exhaust retries and dispatch `Event::RequestFailed(kind: :retries_exhausted)`.
+* **Initiation retry exhaustion on 200**: Continuous missing status headers on HTTP 200 during `start` exhaust retries and dispatch `Event::RequestFailed(kind: :retries_exhausted)` with `"Missing X-Goog-Upload-Status header in start response"`.
+* **Initiation retry exhaustion on non-200**: Continuous non-200 HTTP responses (e.g. 503) lacking status header exhaust retries and return `Event::HttpResponse` directly, allowing `Rules` to raise `BadResponseError` preserving the HTTP status code and message.
 * **Control plane non-retry**: Missing status header on `query` does not retry inside `execute_send_query`, returning `Event::HttpResponse` immediately to drive protocol recovery.
 
 ---

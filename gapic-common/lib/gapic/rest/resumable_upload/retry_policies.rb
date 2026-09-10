@@ -117,14 +117,15 @@ module Gapic
         # @param error_or_response [Object]
         # @return [Integer, nil]
         def self.extract_status_code error_or_response
-          if error_or_response.respond_to? :status
-            error_or_response.status
-          elsif error_or_response.respond_to?(:response) && error_or_response.response.is_a?(Hash)
-            error_or_response.response[:status]
-          elsif error_or_response.respond_to? :status_code
+          if error_or_response.respond_to?(:status_code) && error_or_response.status_code.is_a?(Integer)
             error_or_response.status_code
-          elsif error_or_response.respond_to? :response_status
+          elsif error_or_response.respond_to?(:response) && error_or_response.response.is_a?(Hash) &&
+                error_or_response.response[:status].is_a?(Integer)
+            error_or_response.response[:status]
+          elsif error_or_response.respond_to?(:response_status) && error_or_response.response_status.is_a?(Integer)
             error_or_response.response_status
+          elsif error_or_response.respond_to?(:status) && error_or_response.status.is_a?(Integer)
+            error_or_response.status
           end
         end
       end

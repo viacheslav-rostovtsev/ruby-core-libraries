@@ -76,7 +76,7 @@ class DriverRetryTest < Minitest::Test
     assert_chunk_request stub.requests[2], offset: "0", length: "4", body: "0123", finalize: true
   end
 
-  def test_start_exhausts_retries_when_responses_continually_lack_status_header
+  def test_start_exhausts_retries_when_200_responses_continually_lack_status_header
     responses = Array.new(10) { FakeResponse.new status: 200, headers: {}, body: "" }
     stub = FakeClientStub.new responses
     config = CompleteUploadConfig.new(
@@ -93,6 +93,29 @@ class DriverRetryTest < Minitest::Test
     end
 
     assert_match(/Missing X-Goog-Upload-Status/, err.message)
+    assert_equal 200, err.status_code
+    assert stub.requests.size > 1
+  end
+
+  def test_start_exhausts_retries_when_non_200_responses_continually_lack_status_header
+    responses = Array.new(10) { FakeResponse.new status: 503, headers: {}, body: "Service Unavailable" }
+    stub = FakeClientStub.new responses
+    config = CompleteUploadConfig.new(
+      initial_url:        "https://example.com/upload",
+      stream:             StringIO.new("0123"),
+      upload_size:        4,
+      chunk_size:         10,
+      start_retry_policy: { initial_delay: 0.001, max_delay: 0.002, timeout: 0.01 }
+    )
+
+    driver = Driver.new client_stub: stub, config: config
+    err = assert_raises BadResponseError do
+      driver.run
+    end
+
+    assert_equal 503, err.status_code
+    assert_includes err.message, "503"
+    refute_match(/Missing X-Goog-Upload-Status/, err.message)
     assert stub.requests.size > 1
   end
 
